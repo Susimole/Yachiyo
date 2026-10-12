@@ -13,7 +13,7 @@
  */
 'use strict';
 
-const { app, BrowserWindow, screen, ipcMain, shell, powerMonitor, desktopCapturer, nativeImage } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, shell, dialog, powerMonitor, desktopCapturer, nativeImage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -338,6 +338,45 @@ ipcMain.on('ov:close-kind', (_e, kind) => {
  * 详见 overlay.cjs 的 designMode —— 只放大不缩小、退出精确还原。
  */
 ipcMain.on('ov:design', (_e, on) => { overlay.designMode(!!on); });
+
+/**
+ * 界面调试台「保存成文件」—— 存到桌面，存完**在资源管理器里高亮它**。
+ *
+ * ⚠️⚠️ 为什么非要有这一条（他 2026-10-13 报「没找到 JSON 放在哪了」）：
+ *    原来只有一个「导出 JSON」按钮，走 `navigator.clipboard.writeText` +
+ *    `console.log`。问题是：
+ *      · 剪贴板失败**不报错**（file:// 下可能被静默拒），我却在界面上
+ *        先弹了「已复制到剪贴板」—— **假成功**，他 Ctrl+V 出来是空的；
+ *      · 就算成功，他也**看不到内容**、更没法存成文件。
+ *    ⇒ 现在点了直接落盘 + 弹资源管理器，文件在哪一目了然。
+ *
+ * ⚠️ 走 `dialog.showSaveDialog` 而不是硬写死路径 —— 他可能想存到别处。
+ *    默认文件名带时间戳，连着导几次不会互相覆盖。
+ */
+ipcMain.handle('design:save', async (_e, text) => {
+  const s = String(text == null ? '' : text);
+  if (!s) return { ok: false, why: '没有内容' };
+  const stamp = (() => {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  })();
+  try {
+    const r = await dialog.showSaveDialog({
+      title: '保存调试台的导出',
+      defaultPath: path.join(app.getPath('desktop'), `八千代-界面调试-${stamp}.json`),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: false, why: '取消了' };
+    fs.writeFileSync(r.filePath, s, 'utf8');
+    // 存完把它在资源管理器里点亮 —— 不然他还是得自己去找
+    try { shell.showItemInFolder(r.filePath); } catch { /* 亮不了就算了，文件已经存下 */ }
+    return { ok: true, file: r.filePath, bytes: Buffer.byteLength(s) };
+  } catch (err) {
+    plog('[调试台] 保存失败：' + err.message);
+    return { ok: false, why: err.message };
+  }
+});
 
 /**
  * ★ **只给探针用**：把「准备睡」掰过去 / 回来。

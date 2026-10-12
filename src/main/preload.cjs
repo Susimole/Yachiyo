@@ -145,6 +145,8 @@ contextBridge.exposeInMainWorld('yachiyo', {
      * 只有设置面板的调试台会调；主进程那边只放大不缩小、退出精确还原。
      */
     design: (on)         => ipcRenderer.send('ov:design', !!on),
+    /** 调试台「保存成文件」—— 存到桌面并在资源管理器里点亮它 */
+    designSave: (text)   => ipcRenderer.invoke('design:save', text),
     /**
      * ★★ **只给探针用**：把主窗口收到的 `bubble:*` 事件重放一遍。
      *

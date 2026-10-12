@@ -293,15 +293,35 @@ async function main() {
   chk('文字段抓到顶栏标题', !!(json && json.文字 && json.文字['panel.title']),
     json && json.文字 && json.文字['panel.title']);
 
-  const exp = await P.ev(`(() => {
-    const b = [...document.querySelectorAll('.d-bar .d-btn')].find(x => /导出/.test(x.textContent));
-    if (!b) return { err: '找不到导出按钮' };
-    b.click();
-    return { clicked: true };
+  // ★ 点了「导出 JSON」应该**弹出一个能看见内容的框**（他上一轮报「没找到 JSON 在哪」）
+  await P.ev(`(() => { const b=[...document.querySelectorAll('.d-bar .d-btn')].find(x=>/导出/.test(x.textContent)); if(b) b.click(); })()`);
+  await sleep(900);
+  const expBox = await P.ev(`(() => {
+    const box = document.querySelector('.d-export');
+    if (!box) return { err: '没弹出导出框' };
+    const ta = box.querySelector('.d-export-t');
+    const v = ta ? ta.value : '';
+    let parsed = null; try { parsed = JSON.parse(v); } catch { /* 不是合法 JSON */ }
+    return {
+      hasBox: true,
+      visible: box.getBoundingClientRect().width > 100,
+      len: v.length,
+      parseOk: !!parsed,
+      sections: parsed ? Object.keys(parsed) : null,
+      btnLabels: [...box.querySelectorAll('.d-export-f .d-btn')].map(b => b.textContent.trim()),
+      readonly: ta ? ta.readOnly : null,
+    };
   })()`);
-  await sleep(700);
-  const toast = await P.ev(`(() => { const t = document.querySelector('.d-toast'); return t ? t.textContent : null; })()`);
-  chk('点导出有反馈提示', !!(exp && exp.clicked) && !!toast, toast || (exp && exp.err));
+  chk('导出弹出可见的框', !!(expBox && expBox.hasBox && expBox.visible), expBox && (expBox.err || expBox.visible));
+  chk('框里内容是合法 JSON', !!(expBox && expBox.parseOk), expBox && expBox.len);
+  chk('JSON 三段齐全', !!(expBox && expBox.sections && expBox.sections.includes('结构') && expBox.sections.includes('文字')), expBox && expBox.sections);
+  chk('框里有三颗按钮（复制/保存/关掉）', !!(expBox && expBox.btnLabels && expBox.btnLabels.length === 3), expBox && expBox.btnLabels);
+  chk('文本框是只读的（防手滑改坏）', !!(expBox && expBox.readonly === true), expBox && expBox.readonly);
+  chk('保存用的桥接上了', (await P.ev('typeof ((window.yachiyo||{}).ov||{}).designSave')) === 'function');
+  // 关掉它，别挡着后面的检查
+  await P.ev(`(() => { const b=[...document.querySelectorAll('.d-export-f .d-btn')].find(x=>/关掉/.test(x.textContent)); if(b) b.click(); })()`);
+  await sleep(400);
+  chk('「关掉」按钮能收掉它', (await P.ev(`!!document.querySelector('.d-export')`)) === false);
 
   console.log('');
   console.log('=== ⑥ 退出调试台 —— 必须干净还原 ===');
