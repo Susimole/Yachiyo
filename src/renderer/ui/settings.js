@@ -487,6 +487,78 @@ export const PAGES = [
 ];
 
 /* ============================================================
+   分组覆盖表 —— 界面调试台搬动分组用
+   ============================================================
+   ⚠️ `PAGES` 是**静态数据**，分组搬走了不该改它本身（改了就没法"还原"）。
+      所以调试台把"哪些组搬到哪儿"记在这个 Map 里，
+      `showPage` 渲染时拿它和 PAGES 合并 —— 撤回只要把键删掉。
+
+   键 = 页面 key（'habit' / 'ai' / ...），值 = 该页**完整的**分组数组。
+
+   ⚠️ 这个 Map 是**模块级**的：调试台搬完东西会调 `showPage` 重画，
+      重画时数据得还在。退出调试台时由 design.js 清空。
+   ============================================================ */
+const groupOverride = new Map();
+
+/*
+ * ★ 给每个分组发一张"身份证"（`__gid` = 原来在哪页 + 第几组）。
+ *
+ * 为什么需要：调试台要能把组搬到别页去，那就得**认得出"这是同一个组"** ——
+ *   它搬到新页面之后，在数组里的下标会变、前后邻居也变了，
+ *   只有这个 id 是跟着它走的。还原的时候也靠它找回原位。
+ *
+ * ⚠️ 是**原地改 PAGES 对象**（加一个字符串字段），不是深拷贝 ——
+ *   PAGES 里那些 `rows` 里的函数引用（`act: (a) => a.reset()`）深拷会丢语义。
+ */
+for (const p of PAGES) {
+  p.groups.forEach((g, i) => { if (!g.__gid) g.__gid = p.k + '#' + i; });
+}
+
+export function setGroupOverride(map) { groupOverride.clear(); if (map) for (const [k, v] of map) groupOverride.set(k, v); }
+export function getGroupOverride() { return groupOverride; }
+
+/**
+ * ★ 给调试台用的两个口：
+ *   `PAGES_FOR_DESIGN()` —— 拿原始页面结构（它按 `__gid` 找"这个组本来在哪一页"）
+ *   `ALL_GROUPS()`       —— 把所有组摊平成一张表，调试台搬动分组时按 id 取原件
+ *
+ * ⚠️ 返回的是**原件不是副本** —— 搬动只改 `groupOverride` 那个 Map，
+ *    PAGES 本身一个字都不动，所以「还原」永远有得可还原。
+ */
+export const PAGES_FOR_DESIGN = () => PAGES;
+export function ALL_GROUPS() {
+  const byId = new Map();
+  for (const p of PAGES) for (const g of p.groups) byId.set(g.__gid, { page: p.k, group: g });
+  return byId;
+}
+
+/**
+ * 调试台把某个自定义行搬到别的页之后，原来"按页挂载"的逻辑就找不着它了。
+ * 这张表按**标记**找，跟在哪一页无关。
+ *
+ * ⚠️ 别删——`lang` 那几个是老代码留下来没用的（`if (el)` 会跳过），
+ *    留着是为了以后真要加时有个现成位置。
+ */
+const MOUNTS = {
+  usageStats: (el) => mountUsage(el),
+  aiDebug: (el) => mountAiDebug(el),
+  weatherTest: (el) => mountWeatherTest(el),
+  cfgPath: (el) => mountCfgPath(el),
+  designEntry: (el) => mountDesignEntry(el),
+  tiltPoses: (el) => mountTiltPoses(el),
+  fontPick: (el) => mountFontPick(el),
+  lang: () => { /* 语言那一行一直是占位，从来没有实现 */ },
+};
+
+/** 把某一页里所有 `t:'custom'` 的行挂上——**按标记找，跟页面无关** */
+function mountCustoms(root) {
+  for (const el of root.querySelectorAll('[data-custom]')) {
+    const fn = MOUNTS[el.dataset.custom];
+    if (fn) { try { fn(el); } catch (err) { console.error('[设置] 挂载 ' + el.dataset.custom + ' 失败：' + err.message); } }
+  }
+}
+
+/* ============================================================
    造 DOM
    ============================================================ */
 
@@ -1174,7 +1246,13 @@ export function showPage(k) {
   main.scrollTop = 0;
   main.innerHTML = `<h2>${esc(p.title)}</h2><div class="desc">${esc(p.desc)}</div>`;
 
-  for (const g of p.groups) {
+  /*
+   * ⚠️ 分组列表**可能被调试台改过**（他把某个组搬到别页去了）——
+   *    所以先看覆盖表，没有才用 PAGES 里写死的。见上面 groupOverride 那段。
+   */
+  const groups = groupOverride.get(p.k) || p.groups;
+
+  for (const g of groups) {
     /*
      * ⚠️ 标了 `devOnly` 的组**正式版整组不画** —— 连那个框带标题一起。
      *    我第一版只在行里判断（`mountDesignEntry` 里 `if (!DEV) return`），
@@ -1184,24 +1262,32 @@ export function showPage(k) {
     if (g.devOnly && !DEV()) continue;
     const box = document.createElement('div');
     box.className = 'group';
+    // 调试台靠这个认人（拖拽时要知道拖的是哪个组、松手时往哪儿插）
+    if (g.__gid) box.dataset.dgroup = g.__gid;
     if (g.title) box.innerHTML = `<div class="g-title">${esc(g.title)}</div>`;
     for (const row of g.rows) box.appendChild(rowEl(row, ctx));
     main.appendChild(box);
   }
 
-  if (p.k === 'ai') {
-    const u = main.querySelector('[data-custom="usageStats"]'); if (u) mountUsage(u);
-    const d = main.querySelector('[data-custom="aiDebug"]');    if (d) mountAiDebug(d);
+  /*
+   * ★ 自定义行的挂载**按标记找，不再按页面找**。
+   *
+   * ⚠️ 原来这里是 `if (p.k === 'ai') { … }` 一串 —— 那种写法跟"这个自定义项在哪一页"
+   *    绑死了：调试台一旦把「联网」组从 AI 页搬到高级页，里面若有自定义项就没人挂。
+   *    改成按 `data-custom` 标记找，**搬到哪儿都自动跟上**。
+   */
+  mountCustoms(main);
+
+  /*
+   * 调试台把这一页的组**全搬走了** → 留个话，别让他以为是面板坏了。
+   * 只在调试态显示（`showPage` 每次都整片重建 innerHTML，所以不存在"重复加"）。
+   */
+  if (!main.querySelector('.group') && document.querySelector('.card.d-on')) {
+    const tip = document.createElement('div');
+    tip.className = 'd-empty';
+    tip.textContent = '（这一页的组都搬走了 —— 用左栏的下拉搬回来，或点「还原」）';
+    main.appendChild(tip);
   }
-  if (p.k === 'weather') { const w = main.querySelector('[data-custom="weatherTest"]'); if (w) mountWeatherTest(w); }
-  if (p.k === 'adv') {
-    const c = main.querySelector('[data-custom="cfgPath"]'); if (c) mountCfgPath(c);
-    const d = main.querySelector('[data-custom="designEntry"]'); if (d) mountDesignEntry(d);
-    // ★ 「倾斜角」那 5 根滑块（在「画面」组里，也是高级页）—— 见 mountTiltPoses
-    const tp = main.querySelector('[data-custom="tiltPoses"]'); if (tp) mountTiltPoses(tp);
-  }
-  // 字体那一行在「习惯」页的通用组里
-  const fp = main.querySelector('[data-custom="fontPick"]'); if (fp) mountFontPick(fp);
 }
 
 /**

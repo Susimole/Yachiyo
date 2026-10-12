@@ -152,8 +152,8 @@ html,body{
 }
 .p-side .title{ font-weight:700; font-size:15px; padding:4px 10px 12px; letter-spacing:.5px; }
 .p-side .nav{
-  display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:10px;
-  cursor:pointer; color:var(--sub); font-size:13px;
+  display:flex; align-items:center; gap:9px; padding:var(--d-nav-pad, 8px) 10px; border-radius:10px;
+  cursor:pointer; color:var(--sub); font-size:var(--d-nav-size, 13px);
 }
 .p-side .nav:hover{ background:var(--hover); color:var(--fg); }
 .p-side .nav.on{ background:var(--bg-solid); color:var(--fg); font-weight:600; box-shadow:0 1px 4px rgba(0,0,0,.1); }
@@ -182,27 +182,27 @@ html,body{
 /* 开调试台时给底部那条腾地方（`--d-main-pb` 由 .card.d-on 定义） */
 .p-main{ padding-bottom:var(--d-main-pb, 20px); }
 .p-main h2{ margin:0 0 2px; font-size:var(--d-h2-size, 19px); font-weight:700; }
-.p-main .desc{ color:var(--sub); font-size:var(--d-desc-size, 12.5px); margin-bottom:16px; }
+.p-main .desc{ color:var(--sub); font-size:var(--d-desc-size, 12.5px); margin-bottom:var(--d-desc-gap, 16px); }
 .page{ display:none; }
 .page.on{ display:block; }
 
-.group{ border:1px solid var(--line); border-radius:14px; padding:4px 14px;
+.group{ border:1px solid var(--line); border-radius:14px; padding:var(--d-group-pad, 4px) 14px;
         margin-bottom:var(--d-gap, 14px); }
-.group > .g-title{ font-size:12px; color:var(--sub); padding:11px 0 7px; letter-spacing:.4px; }
+.group > .g-title{ font-size:var(--d-gtitle-size, 12px); color:var(--sub); padding:var(--d-gtitle-pad, 11px) 0 7px; letter-spacing:var(--d-gtitle-ls, .4px); }
 
-.row{ display:flex; align-items:center; gap:14px; min-height:44px; padding:9px 0; border-top:1px solid var(--line); }
+.row{ display:flex; align-items:center; gap:var(--d-row-gap, 14px); min-height:var(--d-row-h, 44px); padding:var(--d-row-pad, 9px) 0; border-top:1px solid var(--line); }
 .group > .row:first-of-type{ border-top:0; }
 /* ⚠️ 78px 太窄 —— 中文提示两三个词就被折成三行，行高把整组撑得老高。
    92px + 10.5px 字号刚好够「关掉她就原地待着不动」排两行。 */
-.row .label{ width:92px; flex:none; }
-.row .label small{ display:block; color:var(--sub); font-size:10.5px; line-height:1.35; margin-top:1px; }
+.row .label{ width:var(--d-label-w, 92px); flex:none; font-size:var(--d-label-size, 13.5px); }
+.row .label small{ display:block; color:var(--sub); font-size:var(--d-hint-size, 10.5px); line-height:1.35; margin-top:var(--d-hint-gap, 1px); }
 /* 「待接」—— 点了没反应的项要自己承认，别让他以为是没点对 */
 .row .label .todo{
   font-style:normal; font-size:9.5px; color:var(--sub); opacity:.7;
   border:1px solid var(--line); border-radius:4px; padding:0 3px; margin-left:4px;
   vertical-align:1.5px; white-space:nowrap;
 }
-.row .body{ flex:1; display:flex; align-items:center; gap:12px; min-width:0; }
+.row .body{ flex:1; display:flex; align-items:center; gap:var(--d-body-gap, 12px); min-width:0; }
 .row .val{ color:var(--sub); font-size:12px; font-variant-numeric:tabular-nums; min-width:46px; text-align:right; }
 
 /* 滑块 */
