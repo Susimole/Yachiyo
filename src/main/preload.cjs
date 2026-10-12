@@ -27,6 +27,17 @@ const { contextBridge, ipcRenderer } = require('electron');
 const DEV = (process.argv || []).includes('--yachiyo-dev');
 
 contextBridge.exposeInMainWorld('yachiyo', {
+  /**
+   * ★ **只给页面看的一个标记**：现在跑的是开发版吗。
+   *
+   * 设置面板拿它决定「界面调试台」那颗按钮挂不挂 —— 正式版里**根本不出现**，
+   * 而且调试台那个模块（ui/design.js）走的是动态 import，正式版连加载都不加载。
+   *
+   * ⚠️ 它必须在**顶层**（跟 cfg / win / ov 平级）。我第一版顺手写在 `ov:` 里面了，
+   *    页面读 `window.yachiyo.dev` 永远是 undefined ⇒ 开发版里按钮也不见了。
+   */
+  dev: DEV,
+
   /* ---------- 配置 ---------- */
   cfg: {
     all:   ()      => ipcRenderer.invoke('cfg:all'),
