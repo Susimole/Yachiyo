@@ -1288,6 +1288,20 @@ export function showPage(k) {
     tip.textContent = '（这一页的组都搬走了 —— 用左栏的下拉搬回来，或点「还原」）';
     main.appendChild(tip);
   }
+
+  /*
+   * ★★ 调试台回挂 —— **必须在最后**。
+   *
+   * ⚠️⚠️ 这一行不加就是个"必经之路"的 bug（他 2026-10-13 撞到的）：
+   *    上面 `main.innerHTML = …` 把 `#pMain` 整片重建了，
+   *    可编辑文字 / 拖拽把手 / 分组下拉**全绑在旧 DOM 上**，重建就蒸发。
+   *    于是：进调试台 → 一切正常 → **点一下左栏切页 → 全没了**。
+   *    （探针当时没抓到，因为它从头到尾没切过页；真人一点就现原形。）
+   *
+   * 调试台没开的时候 `window.__designAttach` 是 undefined 或者自己 return，
+   * 这一句对一个普通用户来说等于不存在。
+   */
+  try { if (window.__designAttach) window.__designAttach(); } catch (err) { console.error('[设置] 调试台回挂失败：' + err.message); }
 }
 
 /**

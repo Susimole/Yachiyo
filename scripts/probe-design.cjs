@@ -162,6 +162,46 @@ async function main() {
   chk('每个分组都有下拉兜底', dom.sels > 0, dom.sels);
 
   console.log('');
+  console.log('=== ③a ★ 切页之后功能还在吗（他 2026-10-13 撞到的那个坑）===');
+  /*
+   * 他报的原话：「点了一下其他地方，又不能编辑文本和拖动分组了」。
+   * 根因：`showPage` 把 `#pMain` 整片重建，挂在旧 DOM 上的
+   *      可编辑文字 / 拖拽把手 / 下拉全没了 —— 而切页是**必经之路**。
+   * 下面这段专门走一遍"切页 → 再量一次"，把这个回归锁死。
+   */
+  await P.ev(`(() => { const n = [...document.querySelectorAll('#navs .nav')].find(x => x.dataset.k === 'habit'); if (n) n.click(); })()`);
+  await sleep(1300);
+  const afterNav = await P.ev(`(() => ({
+    labels: document.querySelectorAll('.d-editable.c-label').length,
+    hints: document.querySelectorAll('.d-editable.c-hint').length,
+    gtitle: document.querySelectorAll('.d-editable.c-gtitle').length,
+    grabs: document.querySelectorAll('.g-title.d-grab').length,
+    sels: document.querySelectorAll('.d-gsel').length,
+    marks: document.querySelectorAll('.d-mark').length,
+    bar: !!document.querySelector('.d-bar'),
+  }))()`);
+  chk('切页后行标签仍可编辑', afterNav.labels > 3, afterNav.labels);
+  chk('切页后分组标题仍可编辑', afterNav.gtitle > 0, afterNav.gtitle);
+  chk('切页后拖拽把手还在', afterNav.grabs > 0, afterNav.grabs);
+  chk('切页后下拉兜底还在', afterNav.sels > 0, afterNav.sels);
+  chk('切页后区域轮廓还在', afterNav.marks > 0, afterNav.marks);
+  chk('切页后参数栏还在', afterNav.bar === true);
+
+  // 再连切两页，确认不是"只对第一次有效"
+  await P.ev(`(() => { const n = [...document.querySelectorAll('#navs .nav')].find(x => x.dataset.k === 'weather'); if (n) n.click(); })()`);
+  await sleep(900);
+  await P.ev(`(() => { const n = [...document.querySelectorAll('#navs .nav')].find(x => x.dataset.k === 'adv'); if (n) n.click(); })()`);
+  await sleep(1000);
+  const afterTwice = await P.ev(`(() => ({
+    labels: document.querySelectorAll('.d-editable.c-label').length,
+    grabs: document.querySelectorAll('.g-title.d-grab').length,
+    sels: document.querySelectorAll('.d-gsel').length,
+  }))()`);
+  const twiceOk = !!(afterTwice && !afterTwice.__err
+    && afterTwice.labels > 3 && afterTwice.grabs > 0 && afterTwice.sels > 0);
+  chk('连切两页后依然在', twiceOk, afterTwice);
+
+  console.log('');
   console.log('=== ③b 跨区搬分组 ===');
   const moved = await P.ev(`(async () => {
     // 先看清楚每个下拉对应哪个组（免得按第几个瞎猜）
@@ -243,6 +283,13 @@ async function main() {
   chk('左栏宽度记成了刚改的 190', !!(json && json.结构 && json.结构['side-w'] === 190),
     json && json.结构 && json.结构['side-w']);
   chk('快照有「文字」段', !!(json && json.文字), json && json.文字);
+  // 串页/重复检查（比只看一个键更能说明问题）
+  const tk = Object.keys(json.文字 || {});
+  const crossPage = tk.filter(k => /倾斜角|帧率上限|网格精度|识屏/.test(json.文字[k] || ''));
+  chk('导出没有串进别的页的文案', crossPage.length === 0, crossPage);
+  const gkeys = tk.filter(k => /^group./.test(k));
+  chk('分组标题键不重复', new Set(gkeys).size === gkeys.length && gkeys.length > 0, gkeys.length + ' 个');
+  chk('面板级文字没丢', tk.includes('panel.title') && tk.includes('panel.brand'), tk.filter(k=>/^panel/.test(k)));
   chk('文字段抓到顶栏标题', !!(json && json.文字 && json.文字['panel.title']),
     json && json.文字 && json.文字['panel.title']);
 

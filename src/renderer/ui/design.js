@@ -147,7 +147,6 @@ function makeContentEditable() {
     });
   });
 
-  for (const el of $$('.d-editable', main)) textEls.push(el);
 }
 
 /**
@@ -179,6 +178,7 @@ function wrapEditable(host, key, cls, o = {}) {
   span.contentEditable = 'true';
   span.spellcheck = false;
   span.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); span.blur(); } }, true);
+  textEls.set(key, span);       // 记进本轮（退出调试台时要按它把类摘干净）
 }
 
 /* ============================================================
@@ -189,7 +189,17 @@ let on = false;
 let bar = null;                 // 底部那条调试栏
 let marks = [];                 // 画在页面上的轮廓框
 let handles = [];               // 拖拽把手
-let textEls = [];               // 所有被挂上 contentEditable 的元素
+/**
+ * 所有被挂上 contentEditable 的元素 —— **按 key 存 Map，不是数组**。
+ *
+ * ⚠️⚠️ 2026-10-13 从导出的 JSON 里看出来的隐患：
+ *   `#pMain` 每次重画都会再造一批新元素，如果只往数组里 push，
+ *   **切一次页就攒一批**。切过三页之后导出，`文字` 段里同一批 key
+ *   （`group.3.title` 之类）会有好几份互相打架的值，
+ *   而且里面混着**别的页**的文案 —— 拿去改代码就会把文案贴错页。
+ *   ⇒ 换 Map：重画前先踢掉所有"已经不在 DOM 里"的，同一个 key 只留最新的。
+ */
+const textEls = new Map();      // key -> element
 let dragging = null;            // 正在拖的把手
 let dragGroup = null;           // 正在拖的分组（跨区移动用）
 
@@ -423,19 +433,37 @@ function syncInputs() {
    文字可编辑
    ============================================================ */
 
+/**
+ * 把一个元素标成可编辑。
+ * ⚠️ 加 `dataset.marked` 是为了**防重复**：顶栏标题那几处不随页重建，
+ *   `attachToPage` 每次重画都会再跑一遍 `makeEditable`，
+ *   不防的话会给它们**叠一堆一模一样的 keydown 监听**（跑一百次就一百个）。
+ */
+function markEditable(el, key, cls) {
+  el.dataset.dkey = key;
+  el.contentEditable = 'true';
+  el.spellcheck = false;
+  el.classList.add('d-editable');
+  if (cls) el.classList.add(cls);
+  // ⚠️ 监听器**只挂一次**（`marked` 小写是 JS 侧的私有标记，跟 dkey 分开）：
+  //    顶栏标题那几处不随页重建，`attachToPage` 每重画一次就会再标一次，
+  //    不防的话会叠一堆一模一样的监听器。
+  if (el.dataset.marked) return;
+  el.dataset.marked = '1';
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } }, true);
+}
+
 function makeEditable() {
+  textEls.clear();          // ★ 每次重建 —— 不"记账"，只记这一轮挂上去的
+
   // ① 固定那几处（顶栏标题 / 左栏署名 / 页面标题 / 页面介绍）
   for (const t of TEXT_PARAMS) {
     const el = $(t.sel);
-    if (!el || el.dataset.dkey) continue;
-    el.contentEditable = 'true';
-    el.spellcheck = false;
-    el.classList.add('d-editable');
-    el.dataset.dkey = t.k;
-    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } }, true);
-    textEls.push(el);
+    if (!el) continue;
+    markEditable(el, t.k, null);
+    textEls.set(t.k, el);
   }
-  // ② 页面上跟着内容走的那批（分组标题 / 47 行的标签和提示 / 按钮）
+  // ② 页面上跟着内容走的那批（分组标题 / 每行的标签和提示 / 按钮）
   makeContentEditable();
 }
 
@@ -449,7 +477,7 @@ function makeEditable() {
  *    重画一次，DOM 连包过的 span 带 contenteditable 一起消失，天然还原。
  */
 function clearEditable() {
-  for (const el of textEls) {
+  for (const el of textEls.values()) {
     el.contentEditable = 'false';
     /*
      * ⚠️⚠️ **类必须自己摘**（2026-10-13 探针抓到的）。
@@ -461,8 +489,9 @@ function clearEditable() {
      */
     el.classList.remove('d-editable', 'c-gtitle', 'c-label', 'c-hint', 'c-btn');
     delete el.dataset.dkey;
+    delete el.dataset.marked;
   }
-  textEls = [];
+  textEls.clear();
 }
 
 /* ============================================================
@@ -635,6 +664,61 @@ function syncGroupCtl() {
 }
 
 /* ============================================================
+   ★★ 页重画钩子 —— 这是整个调试台最关键的一处接线
+   ============================================================
+   ⚠️⚠️ 他 2026-10-13 报的：「点了一下其他地方，又不能编辑文本和拖动分组了」。
+
+   根因：`showPage()` 会把 `#pMain` **整片重建**（`innerHTML = ...`），
+        而可编辑文字 / 拖拽把手 / 分组下拉**全是绑在旧 DOM 上的** ——
+        重建之后一个都不剩。而切页、点导航、搬完分组重画……
+        都会走 `showPage`，所以**几乎每一个操作都会把它清光**。
+
+        我第一版把"挂功能"跟"进入调试台"焊在一起（只在 `enable()` 里调一次），
+        于是：进调试台 → 都好使 → **点一下左栏 → 全没了**。
+        探针没抓到是因为它从头到尾没切过页（只测了下拉搬动），
+        他是第一个真的用手点的 —— 这类"必经之路"的 bug 只有真人会撞上。
+
+   ⇒ 解法：`showPage` 每次重画完都回调一次，把这几样重新挂上。
+      钩子在 settings.js 的 `showPage` 末尾调，那边只认 `window.__designAttach`。
+   ============================================================ */
+window.__designAttach = () => {
+  if (!on) return;
+  const navOn = $('#navs .nav.on');
+  if (navOn && navOn.dataset.k) curPage = navOn.dataset.k;
+  const card = $('.card');
+  if (card) card.dataset.dpage = curPage;
+  attachToPage();
+};
+
+/** 把"跟着页面走"的那几样重新挂上（重画之后必须再跑一遍） */
+function attachToPage() {
+  /*
+   * ★ `#pMain` 每次重画都造一批**全新**元素，而**上一批**虽然已经不在 DOM 里了，
+   *   `data-dkey` 还挂在它们身上 —— 导出是"扫 DOM"，本来不该受影响，
+   *   但如果旧元素因为某种原因还留在文档里，就会出现**同一个 key 两份**。
+   *   所以这里只做一件事：把已经**离开文档**的那些摘干净。
+   *
+   * ⚠️⚠️ 别在这儿 `clearEditable()` —— 那会把**外面那两处**
+   *    （顶栏标题 `.bar .title`、左栏署名 `.p-foot b`）也摘掉。
+   *    它们在 `.card` 里、不随 `#pMain` 重建，摘了就**再也挂不回来**：
+   *    一开调试台顶栏标题就点不动，而且一声不响。
+   *    2026-10-13 试过，`panel.title` 直接从导出里消失了。
+   */
+  for (const [, el] of [...textEls]) {
+    if (document.body.contains(el)) continue;
+    el.contentEditable = 'false';
+    el.classList.remove('d-editable', 'c-gtitle', 'c-label', 'c-hint', 'c-btn');
+    delete el.dataset.dkey;
+    delete el.dataset.marked;
+  }
+
+  makeEditable();        // 所有文字可编辑（含 47 行的标签/提示）—— 内部会重建记录
+  installGroupMove();    // 分组拖拽把手 + 兜底下拉
+  drawMarks();           // 区域轮廓
+  syncGroupCtl();
+}
+
+/* ============================================================
    导出
    ============================================================ */
 
@@ -645,12 +729,18 @@ function snapshot() {
   for (const p of NUM_PARAMS) out.结构[p.k.replace(/^--d-/, '')] = getVar(p.k, p.def);
 
   /*
-   * 文字 —— **所有**挂过 contentEditable 的，键就是 `data-dkey`。
-   * 分三类其实靠前缀区分：`group.` / `row.` 是内容文案，其余是面板级。
+   * 文字 —— ★★ **现扫 DOM，不查内部记账**。
+   *
+   * ⚠️⚠️ 为什么不用 `textEls` 那个 Map（2026-10-13 的教训）：
+   *   我用"往 Map 里登记"的方式维护状态，结果切页之后旧页的元素没清干净、
+   *    导出的 JSON 里同一个 key 有两份打架的值，还混着**别的页**的文案。
+   *    改成"重画时 clear + 重挂"之后更糟：顶栏标题那几处（不随页重建）
+   *    被当成旧元素删掉，**整条 `panel.title` 从导出里消失了**。
+   *    ⇒ 记账就会记错。**DOM 才是真相**：谁带着 `data-dkey` 就导谁。
+   *      这样切过多少页都不会串，也不会漏。
    */
-  for (const el of textEls) {
-    const key = el.dataset.dkey;
-    if (key) out.文字[key] = (el.textContent || '').trim();
+  for (const el of $$('.d-editable[data-dkey]')) {
+    out.文字[el.dataset.dkey] = (el.textContent || '').trim();
   }
 
   // 分组移动（调试台搬过的组）
@@ -701,11 +791,8 @@ export async function enable() {
 
   card.classList.add('d-on');
   buildBar();
-  drawMarks();
-  addHandles();
-  makeEditable();
-  installGroupMove();
-  syncGroupCtl();
+  addHandles();          // 这两个把手长在 `.card` 上，不随页重画，只挂一次
+  attachToPage();        // ★ 跟着页面走的那几样 —— 重画时靠 `__designAttach` 再调
   window.addEventListener('resize', drawMarks, true);
 
   // 面板窗口放大一点才施展得开
