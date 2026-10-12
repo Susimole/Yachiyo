@@ -749,16 +749,81 @@ function snapshot() {
   return out;
 }
 
+/**
+ * 导出 —— **弹一个能看见内容的框**，不是在后台偷偷复制。
+ *
+ * ⚠️⚠️ 他 2026-10-13 报的：「没找到 JSON 放在哪了」。
+ *    老版本只有一个按钮，走 `navigator.clipboard.writeText` + `console.log`：
+ *      · 剪贴板在 `file://` 下**可能被静默拒绝**，而我不等 Promise 就先弹了
+ *        「已复制到剪贴板」—— 典型的**假成功**，他 Ctrl+V 出来是空的；
+ *      · 就算复制成功，他也看不到内容、更不知道能存成文件。
+ *    ⇒ 现在：内容**显示在屏幕上**，加「复制」和「保存成文件」两颗按钮。
+ *      保存走主进程的 dialog，存完**自动在资源管理器里点亮**那个文件。
+ */
 function exportJson() {
   const data = snapshot();
   const txt = JSON.stringify(data, null, 2);
   console.log('[调试台] 导出：\n' + txt);
-  // 剪贴板 —— 他能直接粘给我
-  try {
-    navigator.clipboard.writeText(txt).then(
-      () => flash('✓ 已复制到剪贴板'),
-      () => flash('✓ 已打印到控制台（剪贴板不通）'));
-  } catch { flash('✓ 已打印到控制台'); }
+
+  // 关了上一次的（连点两下别叠）
+  const old = $('.d-export');
+  if (old) old.remove();
+
+  const box = document.createElement('div');
+  box.className = 'd-export';
+
+  const head = document.createElement('div');
+  head.className = 'd-export-h';
+  head.innerHTML = `<b>导出的内容</b><span class="d-export-n"></span>`;
+  head.querySelector('.d-export-n').textContent = `${txt.length} 字符 / ${Object.keys(data.文字 || {}).length} 条文字 / ${Object.keys(data.结构 || {}).length} 项参数`;
+
+  const ta = document.createElement('textarea');
+  ta.className = 'd-export-t';
+  ta.readOnly = true;                 // ⚠️ 只读：免得他手滑改了内容又存出去
+  ta.value = txt;
+
+  const foot = document.createElement('div');
+  foot.className = 'd-export-f';
+
+  const bCopy = document.createElement('button');
+  bCopy.className = 'd-btn';
+  bCopy.textContent = '复制';
+  bCopy.onclick = async () => {
+    // ⚠️ 这次**等 Promise 真的回来**再说"成功"，不再先报后验
+    try {
+      await navigator.clipboard.writeText(txt);
+      flash('✓ 已复制');
+    } catch {
+      ta.select();                       // 复制不了就把内容选中，让他 Ctrl+C
+      flash('剪贴板不给用 —— 已帮你选中，按 Ctrl+C');
+    }
+  };
+
+  const bSave = document.createElement('button');
+  bSave.className = 'd-btn d-btn-main';
+  bSave.textContent = '保存成文件…';
+  bSave.onclick = async () => {
+    const api = window.yachiyo && window.yachiyo.ov;
+    if (!api || !api.designSave) { flash('这个版本的桥没接上，用「复制」吧'); return; }
+    bSave.disabled = true;
+    bSave.textContent = '保存中…';
+    const r = await api.designSave(txt);
+    bSave.disabled = false;
+    bSave.textContent = '保存成文件…';
+    if (r && r.ok) flash('✓ 已存到 ' + r.file + '（' + r.bytes + ' 字节）');
+    else flash('没存成：' + ((r && r.why) || '未知原因'));
+  };
+
+  const bClose = document.createElement('button');
+  bClose.className = 'd-btn';
+  bClose.textContent = '关掉';
+  bClose.onclick = () => box.remove();
+
+  foot.append(bCopy, bSave, bClose);
+  box.append(head, ta, foot);
+  $('.card').appendChild(box);
+  ta.focus();
+  ta.select();
   return data;
 }
 
@@ -810,6 +875,7 @@ export function disable() {
   clearMarks();
   clearHandles();              // ★ 别漏 —— 漏了下次进来会叠一层
   if (bar) { bar.remove(); bar = null; }
+  const exp = $('.d-export'); if (exp) exp.remove();     // 导出框也带走
   if (card) {
     card.classList.remove('d-on', 'd-dragging');
     delete card.dataset.dpage;
