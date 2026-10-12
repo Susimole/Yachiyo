@@ -179,6 +179,12 @@ function tick(idleMin, now = new Date()) {
   // 留晚安（只留一次）
   if (!byeSaid) {
     byeSaid = true;
+    /*
+     * ⚠️⚠️ 时刻必须在 `hooks.say` **之前**记 —— `sayIt` 那边要靠它放行。
+     *    记晚了的话，晚安会被「准备睡」那道闸挡下来，他就什么也看不到了
+     *    （而"她说了句晚安"是这条链唯一让他看得见的东西）。
+     */
+    byeAt = Date.now();
     const bye = byeText();
     try { if (hooks.say) hooks.say(bye, { kind: '睡前' }); }
     catch (err) { log.error('自动关闭', '留晚安时出错：' + err.message); }
@@ -206,6 +212,17 @@ function tick(idleMin, now = new Date()) {
 }
 
 let quitTimer = null;
+/**
+ * 晚安说出去的时刻 —— `sayIt` 靠它放行那一句。
+ *
+ * ⚠️⚠️ **必须是时刻，不能只用一个布尔**：`byeSaid` 一旦置 true 就永远是 true，
+ *     拿它当判据的话，晚安之后（退出前那一拍、或者万一没退成）**所有**消息
+ *     都会被放行 —— 那就等于睡觉的闸白加了。
+ *     带个时间窗，只有真正挨着晚安那一小段才放行。
+ */
+let byeAt = 0;
+/** 晚安前后多久之内算"就是在说这句"—— 宽限期 3 秒 + 余量，足够覆盖主进程那一跳 */
+const BYE_WINDOW_MS = 8000;
 
 /* ── 状态 ─────────────────────────────────────────────── */
 
@@ -213,10 +230,16 @@ module.exports = {
   FILE, SAW_ACTIVE_MINUTES, LATE_MINUTES,
   attach, tick, byeText, askLate, lateUsedToday, consumeLate,
   sawUserActive: () => sawUserActive,
+  /**
+   * 现在这句是不是"正在说晚安" —— 给主进程的 `sayIt` 放行用。
+   * 拿不到就问不出来，主进程那边会**当作不是**（保守那一边）。
+   */
+  isSayingGoodnight: () => byeSaid && (Date.now() - byeAt) < BYE_WINDOW_MS,
   _setSawActive(v) { sawUserActive = !!v; },
   _reset() {
     sawUserActive = false;
     byeSaid = false;
+    byeAt = 0;
     hooks = { say: null, quit: null, reviewBusy: null, wasActive: null };
     if (quitTimer) { clearTimeout(quitTimer); quitTimer = null; }
     writeState({});

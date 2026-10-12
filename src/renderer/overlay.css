@@ -67,7 +67,7 @@ html,body{
   display:flex; flex-direction:column;
   background:var(--bg);
   border:1px solid var(--line);
-  border-radius:var(--r-card);
+  border-radius:var(--d-radius, var(--r-card));
   box-shadow:var(--shadow);
   overflow:hidden;
 }
@@ -78,7 +78,8 @@ html,body{
       在无边框窗口上会有跟手延迟和抖动。
    ⚠️ 这条上的按钮必须 `no-drag`，否则点不动（系统会把点击当成拖动起手）。 */
 .bar{
-  height:var(--bar-h); flex:none;
+  /* ⚠️ 外层 `--d-bar-h` 只有调试台会写；平时回退到原来的 --bar-h，外观不变 */
+  height:var(--d-bar-h, var(--bar-h)); flex:none;
   display:flex; align-items:center; gap:8px; padding:0 10px;
   border-bottom:1px solid var(--line);
   -webkit-app-region:drag;
@@ -482,3 +483,77 @@ html,body{
 /* 整个条都能拖着走 —— 它盖在她头顶，别挡住她 */
 .ask-card{ -webkit-app-region:drag; }
 .ask-card input, .ask-card button{ -webkit-app-region:no-drag; }
+
+/* ============================================================
+   设置面板 · 界面调试台（ui/design.js）
+   ============================================================
+   ⚠️ 这一整段**只有开调试台时才用得上** —— 平时 class 不在，一条都匹配不到。
+      所以它写在最后、可以随便盖前面的规则，不会影响正常面板。
+   ============================================================ */
+
+/* 开调试台时给底部那条腾地方 */
+.card.d-on{ --d-main-pb:236px; }
+.card.d-dragging{ cursor:col-resize; -webkit-user-select:none; user-select:none; }
+.card.d-dragging *{ -webkit-user-drag:none; }
+
+/* ---- 区域轮廓框：把每块的真实位置量给他看 ---- */
+.d-mark{
+  position:absolute; z-index:60; pointer-events:none;
+  border:1px dashed rgba(224,49,96,.55); border-radius:6px;
+}
+.d-mark-tag{
+  position:absolute; top:-15px; left:0; font-style:normal; white-space:nowrap;
+  font-size:10px; line-height:14px; padding:0 5px; border-radius:4px;
+  background:#e03160; color:#fff;
+}
+
+/* ---- 拖拽把手 ---- */
+.d-handle{
+  position:absolute; z-index:70; background:transparent;
+}
+.d-handle::after{
+  content:''; position:absolute; left:0; right:0; top:0; bottom:0;
+  background:rgba(224,49,96,.35); border-radius:2px; opacity:0;
+  transition:opacity .12s;
+}
+.d-handle:hover::after{ opacity:1; }
+.d-h-bar{ left:0; right:0; height:9px; cursor:row-resize; }
+.d-h-bar::after{ top:3px; height:3px; }
+.d-h-side{ width:9px; bottom:0; cursor:col-resize; }
+.d-h-side::after{ left:3px; width:3px; }
+
+/* ---- 可编辑文字 ---- */
+.d-editable{ outline:1px dashed rgba(10,126,164,.5); outline-offset:2px; border-radius:3px; cursor:text; }
+.d-editable:hover{ background:rgba(10,126,164,.08); }
+.d-editable:focus{ outline:1px solid var(--accent); background:rgba(10,126,164,.10); }
+.d-editable.d-edited{ outline-color:#2ea043; background:rgba(46,160,67,.10); }
+
+/* ---- 底部调试栏 ---- */
+.d-bar{
+  position:absolute; left:0; right:0; bottom:0; z-index:80; height:216px;
+  display:grid; grid-template-columns:1fr 168px; gap:12px; padding:12px;
+  background:var(--bg-solid); border-top:1px solid var(--line);
+  overflow:hidden;
+}
+.d-bar-l{ display:flex; flex-wrap:wrap; gap:8px 12px; align-content:flex-start; overflow-y:auto; }
+.d-item{ display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--sub); }
+.d-item > span{ white-space:nowrap; }
+.d-item input{
+  width:58px; padding:4px 6px; font-size:11.5px;
+  background:var(--well); color:var(--fg);
+  border:1px solid var(--line); border-radius:6px; text-align:right;
+}
+.d-item input:focus{ outline:1px solid var(--accent); }
+.d-bar-r{ display:flex; flex-direction:column; gap:6px; align-items:stretch; }
+.d-btn{
+  padding:6px 10px; font-size:12px; cursor:pointer;
+  background:var(--well); color:var(--fg);
+  border:1px solid var(--line); border-radius:8px;
+}
+.d-btn:hover{ background:var(--hover); }
+.d-btn-main{ background:var(--accent); color:#fff; border-color:transparent; font-weight:600; }
+.d-btn-main:hover{ filter:brightness(1.08); background:var(--accent); }
+.d-toast{
+  font-size:11.5px; color:#2ea043; opacity:0; transition:opacity .2s; text-align:center;
+}
+.d-toast.on{ opacity:1; }
