@@ -5,7 +5,10 @@ node_modules/
 # 构建产物
 dist/
 out/
+# ⚠️ 例外：build/icon.ico 是打包要用的图标，**要**进仓库（见下面的 ! 规则）
 build/
+!build/icon.ico
+!build/
 
 # 探路 / 调试留下的临时文件
 _boot.log

@@ -7,10 +7,67 @@
   "main": "src/main/index.cjs",
   "scripts": {
     "start": "node scripts/start.cjs",
-    "serve": "node scripts/serve.cjs"
+    "serve": "node scripts/serve.cjs",
+    "build": "electron-builder --win nsis",
+    "build:dir": "electron-builder --win --dir"
   },
   "devDependencies": {
-    "electron": "44.4.4"
+    "electron": "44.4.4",
+    "electron-builder": "^26.15.3"
   },
-  "type": "module"
+  "type": "module",
+  "build": {
+    "appId": "com.yachiyo.pet",
+    "productName": "Yachiyo",
+    "copyright": "Copyright © 2026 速食面",
+    "files": [
+      "src/main/**/*",
+      "src/core/**/*",
+      "src/renderer/**/*",
+      "package.json",
+      "!**/*.map",
+      "!**/node_modules/**/*",
+      "!src/renderer/assets/*.ico"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "asar": false,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "${productName}-${version}-安装包.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Yachiyo",
+      "deleteAppDataOnUninstall": false
+    }
+  },
+  "author": {
+    "name": "速食面"
+  },
+  "keywords": [
+    "electron",
+    "desktop-pet",
+    "ai",
+    "llm",
+    "windows"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/你的用户名/yachiyo.git"
+  }
 }
