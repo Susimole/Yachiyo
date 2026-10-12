@@ -195,7 +195,9 @@ function wrapEditable(host, key, cls, o = {}) {
   const base = cut > 0 ? key.slice(cut + 1) : key;
 
   const span = document.createElement('span');
-  span.className = 'd-editable ' + cls;
+  // ⚠️ `d-editable` 只在调试态加 —— 那是视觉标记（虚线框），
+  //    退出之后还挂着的话，满屏虚线框却一个都改不动，是骗人的。
+  span.className = (on ? 'd-editable ' + cls : 'd-txt');
   span.dataset.dkey = key;
   span.dataset.dscope = scope;
   span.dataset.dbase = base;
@@ -209,9 +211,16 @@ function wrapEditable(host, key, cls, o = {}) {
     host.appendChild(span);
   }
 
-  span.contentEditable = 'true';
+  /*
+   * ★★ 这两个标记**永远留着**（不管是不是调试态），但 `contentEditable` 只在调试时开。
+   *
+   * ⚠️ 为什么非留着：他退出调试台之后，改动得**继续看得见**（"即时生效"嘛）。
+   *    而退出会触发一次重画 —— 重画出来的新元素如果没带 `dbase`，
+   *    `applyTexts()` 就一个都对不上，改过的字会当场打回原样。
+   *    带着标记但不可编辑：显示的是他改过的内容，但他改不动（那才是退出调试台的语义）。
+   */
+  span.dataset.dstandby = '1';
   span.spellcheck = false;
-  span.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); span.blur(); } }, true);
 
   /*
    * ★★ 敲一个字就落实（`input`），不是等失焦。
@@ -228,6 +237,12 @@ function wrapEditable(host, key, cls, o = {}) {
     span.classList.add('d-edited');
     scheduleSave();
   });
+
+  // ★ 只有**调试态**才真的可编辑。退出之后保留内容、但改不动。
+  if (on) {
+    span.contentEditable = 'true';
+    span.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); span.blur(); } }, true);
+  }
 
   textEls.set(key, span);       // 记进本轮（退出调试台时要按它把类摘干净）
 }
@@ -518,10 +533,17 @@ function markEditable(el, dkey, scope, base, cls) {
   el.dataset.dkey = dkey;         // 导出扫 DOM 用的原始键
   el.dataset.dscope = scope;
   el.dataset.dbase = base;
-  el.contentEditable = 'true';
-  el.spellcheck = false;
-  el.classList.add('d-editable');
-  if (cls) el.classList.add(cls);
+  el.dataset.dstandby = '1';      // 标记"这是调试台管的"，退出后也留着（见 wrapEditable）
+  /*
+   * ⚠️ `d-editable` 是**视觉标记**（虚线框 + 手型光标），只在调试态加。
+   *    非调试态也加的话，退出调试台之后满屏虚线框 —— 而且元素明明改不动，
+   *    看着像能编辑，是骗人的。（探针量到残留 43 个才发现的。）
+   */
+  if (on) {
+    el.contentEditable = 'true';
+    el.classList.add('d-editable');
+    if (cls) el.classList.add(cls);
+  }
   // ⚠️ 监听器**只挂一次**（`marked` 是 JS 侧私有标记）：
   //    顶栏标题那几处不随页重建，`attachToPage` 每重画一次就会再标一次，
   //    不防的话会叠一堆一模一样的监听器。
@@ -576,11 +598,13 @@ function clearEditable() {
      *     但 `#pMain` **外面**还有两处可编辑（`.bar .title` 顶栏标题、
      *     `.p-foot b` 左栏署名），它们在 `.card` 里，重画 `#pMain` 带不走，
      *     于是退出调试台后它们**一直挂着虚线框**（探针量到残留 2 个）。
-     *     ⇒ 类名和 dkey 都在这里清干净，重画只是额外把包过的 span 带走。
+     *
+     * ⚠️⚠️ 但 `data-dkey` / `data-dscope` / `data-dbase` **一个都不能删**：
+     *     退出调试台之后改动要**继续看得见**，而退出会触发重画 ——
+     *     标记删了，重画出来的新元素对不上号，`applyTexts()` 铺不回去，
+     *     他改过的字会当场打回原样。标记只是"记号"，留着不显示任何东西。
      */
-    el.classList.remove('d-editable', 'c-gtitle', 'c-label', 'c-hint', 'c-btn');
-    delete el.dataset.dkey;
-    delete el.dataset.marked;
+    el.classList.remove('d-editable', 'c-gtitle', 'c-label', 'c-hint', 'c-btn', 'd-edited');
   }
   textEls.clear();
 }
@@ -858,14 +882,53 @@ function syncGroupCtl() {
    ⇒ 解法：`showPage` 每次重画完都回调一次，把这几样重新挂上。
       钩子在 settings.js 的 `showPage` 末尾调，那边只认 `window.__designAttach`。
    ============================================================ */
+/**
+ * ★★ settings.js 每次重画 `#pMain` 之后都调这个（见那边的 showPage 末尾）。
+ *
+ * 它干两件事，**不管开没开调试台**：
+ *   ① 重新把文字包成可标记的 span（`makeEditable`；非调试态下不给它 contentEditable）
+ *   ② 把存下来的覆盖铺回去（`applyState`）—— 这就是"退出之后改动照样在"
+ *
+ * 调试态时再多做一步：把手柄 / 下拉 / 轮廓挂上（`attachToPage`）。
+ *
+ * ⚠️ 名字用 `__design` 前缀挂在 window 上，是因为 settings.js 不能静态 import 本文件
+ *    （会成环，见文件头）。settings 那边只管 `if (window.__designAttach)`。
+ */
 window.__designAttach = () => {
-  if (!on) return;
-  const navOn = $('#navs .nav.on');
-  if (navOn && navOn.dataset.k) curPage = navOn.dataset.k;
-  const card = $('.card');
-  if (card) card.dataset.dpage = curPage;
-  attachToPage();
+  if (!stateLoaded) {
+    stateLoaded = true;
+    // 首次：先把盘上的覆盖读回来，读完再补一遍装饰（同步等不了 await）
+    loadState().then(() => { try { window.__designAttach(); } catch { /* 补一次失败就算了 */ } });
+  }
+  if (on) {
+    const navOn = $('#navs .nav.on');
+    if (navOn && navOn.dataset.k) curPage = navOn.dataset.k;
+    const card = $('.card');
+    if (card) card.dataset.dpage = curPage;
+    attachToPage();
+  } else {
+    /*
+     * ⚠️ 非调试态也要跑 —— 他退出调试台之后改动得继续看得见，
+     *    而**切页**同样会重画，不重新铺一遍就当场打回原样了。
+     */
+    makeEditable();
+    applyState();
+  }
 };
+
+/**
+ * ★★ 装饰 + 铺回改动 —— **每次重画都要跑，不管开没开调试台**。
+ *
+ * ⚠️ 为什么退出调试台之后还得跑：他要"即时生效"，那就得**退出之后照样看得见**。
+ *    而退出会触发一次重画 —— 新 DOM 是干净的，不重新包一遍、不重新铺一遍，
+ *    他改过的字就当场打回原样了。
+ *
+ * 跟 `attachToPage()` 的区别：
+ *   · 这个 = 「把页面弄成能显示改动的样子」（永远要做）
+ *   · 那个 = 「把调试工具挂上去」（只有调试态做）
+ */
+/** 盘上的覆盖读回来没有 —— 用来保证只读一次 */
+let stateLoaded = false;
 
 /** 把"跟着页面走"的那几样重新挂上（重画之后必须再跑一遍） */
 function attachToPage() {
@@ -883,9 +946,13 @@ function attachToPage() {
    */
   for (const [, el] of [...textEls]) {
     if (document.body.contains(el)) continue;
+    // ⚠️ 只清**已经离开文档**的（重画换掉的那批）。标记也一并摘掉，
+    //    免得它们永远挂在游离节点上、越攒越多。
     el.contentEditable = 'false';
     el.classList.remove('d-editable', 'c-gtitle', 'c-label', 'c-hint', 'c-btn');
     delete el.dataset.dkey;
+    delete el.dataset.dscope;
+    delete el.dataset.dbase;
     delete el.dataset.marked;
   }
 
@@ -1066,8 +1133,21 @@ export function disable() {
   on = false;
   const card = $('.card');
 
-  // ① 清掉调试时加上去的东西（CSS 变量 + 那些手柄/轮廓）
-  if (card) for (const p of NUM_PARAMS) card.style.removeProperty(p.k);
+  /*
+   * ⚠️⚠️ **退出调试台不等于还原** —— 这两件事必须分清楚（他 2026-10-13 要的）。
+   *
+   *   退出 = 收起**画图工具**（手柄 / 轮廓 / 参数栏 / 可编辑标记）
+   *   还原 = 把改动**撤销** —— 那是「全部还原」按钮的事
+   *
+   * 我第一版把两者混在一起了：退出时 `removeProperty` 把所有 `--d-*` 擦了、
+   * 还把搬过的分组恢复原位 —— 于是"改完退出就回原样，下次进来才又变回去"，
+   * 那根本不叫即时生效。
+   *
+   * ⇒ 现在退出只收工具，**改动一概留着**：
+   *    · CSS 变量留在 `.card` 上
+   *    · 文字改动由 `applyTexts` 铺着，重画之后也还是改过的
+   *    · 分组搬动继续用着那张覆盖表
+   */
   clearEditable();
   clearMarks();
   clearHandles();              // ★ 别漏 —— 漏了下次进来会叠一层
@@ -1078,10 +1158,13 @@ export function disable() {
     delete card.dataset.dpage;
   }
   window.removeEventListener('resize', drawMarks, true);
+  // ⚠️ 这里**不碰** state / moves / 覆盖表 —— 它们就是"改动本身"
 
-  // ② 把搬动过的分组还原 —— 覆盖表清空 + **整页重画**
-  moves = [];
-  if (setOverrideFn) setOverrideFn(new Map());
+  // ② 重画一次：把包过的 <span>、下拉控件这些调试期 DOM 清干净。
+  //    重画完 `__designAttach` 会因为 `on === false` 直接 return，
+  //    但页面上的**文字内容**会由这次重画从 state 里重新铺回来（见下面这行）。
+  showPageNow();
+  applyState();
   /*
    * ★ 重画这一步很关键：调试台给文字包了 `<span contenteditable>`、
    *   给分组标题塞了下拉控件，这些都不会自己消失。

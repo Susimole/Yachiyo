@@ -378,6 +378,7 @@ function writeDesign(data) {
 ipcMain.handle('design:load', () => readDesign());
 ipcMain.handle('design:put', (_e, data) => writeDesign(data && typeof data === 'object' ? data : {}));
 ipcMain.handle('design:clear', () => {
+  plog('[调试台] design:clear —— 覆盖文件被清掉了（「全部还原」走这条）');
   try { fs.rmSync(DESIGN_FILE(), { force: true }); } catch { /* 本来就没有 */ }
   return { ok: true };
 });
