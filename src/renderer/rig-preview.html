@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>骨架 · 动作一览</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; height: 100%; background: #101418; color: #cfe9f2;
+    font: 14px/1.6 "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    overflow: hidden; user-select: none;
+  }
+  body { display: flex; flex-direction: column; }
+
+  #head {
+    padding: 10px 18px; display: flex; align-items: baseline; gap: 18px;
+    border-bottom: 1px solid #222a32; flex: none;
+  }
+  #head h1 { font-size: 14px; margin: 0; color: #7fd4f0; font-weight: 600; }
+  #state { font-size: 22px; font-weight: 700; color: #fff; min-width: 5em; }
+  #hint { color: #6d7d8a; margin-left: auto; font-size: 12px; }
+
+  #stage {
+    flex: 1; display: grid; place-items: center; position: relative;
+    background-image:
+      linear-gradient(45deg, #171d23 25%, transparent 25%),
+      linear-gradient(-45deg, #171d23 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #171d23 75%),
+      linear-gradient(-45deg, transparent 75%, #171d23 75%);
+    background-size: 28px 28px;
+    background-position: 0 0, 0 14px, 14px -14px, -14px 0;
+  }
+  /* 放大显示，看得清 */
+  #c { width: 720px; height: 720px; image-rendering: auto; }
+
+  #foot {
+    padding: 8px 18px; border-top: 1px solid #222a32; flex: none;
+    display: flex; gap: 20px; color: #6d7d8a; font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  #foot b { color: #7fd4f0; }
+</style>
+</head>
+<body>
+  <div id="head">
+    <h1>骨架 · 动作一览</h1>
+    <span id="state">—</span>
+    <span id="hint">自动循环播放，每隔几秒换一个状态</span>
+  </div>
+
+  <div id="stage"><canvas id="c"></canvas></div>
+
+  <div id="foot">
+    <span>帧率 <b id="fps">—</b></span>
+    <span>套 <b id="set">—</b></span>
+    <span>相位 <b id="ph">—</b></span>
+    <span>身体Y <b id="by">—</b></span>
+    <span>脚A <b id="fa">—</b></span>
+    <span>脚B <b id="fb">—</b></span>
+    <span>眼动 头<b id="gh">—</b> 瞳<b id="gp">—</b> 角<b id="ga">—</b></span>
+    <span id="err" style="color:#ff8a8a"></span>
+  </div>
+
+<script type="module">
+import { Rig, CANVAS_PX } from './rig/rig.js';
+
+const LABEL = { idle: '歇着', walk: '步行', run: '跑动', sit: '坐下', sleep: '睡觉' };
+/** 每个状态停多久（秒） */
+const PLAN = [['idle', 5], ['walk', 7], ['run', 6], ['sit', 7], ['sleep', 7]];
+
+const canvas = document.getElementById('c');
+const errEl = document.getElementById('err');
+
+window.addEventListener('error', (e) => { errEl.textContent = '✕ ' + (e.message || e.error); });
+window.addEventListener('unhandledrejection', (e) => { errEl.textContent = '✕ ' + ((e.reason && e.reason.message) || e.reason); });
+
+const rig = new Rig(canvas, { log: () => {} });
+rig.resize(CANVAS_PX, CANVAS_PX);
+// resize() 会把 inline width/height 写成 460.8px，盖掉样式表 —— 这里再拉大显示尺寸
+canvas.style.width = '720px';
+canvas.style.height = '720px';
+
+// 诊断用：?gridN=1 让切片变粗（看接缝是不是跟着变稀）、?meshK=0 干脆不切
+const _q = new URLSearchParams(location.search);
+if (_q.has('gridN')) rig.gridN = Number(_q.get('gridN'));
+if (_q.has('meshK')) rig.meshK = Number(_q.get('meshK'));
+
+try {
+  const data = await (await fetch('./assets/rig/rig.json?v=' + Date.now())).json();
+  await rig.load(data, './assets/rig');
+} catch (err) {
+  errEl.textContent = '✕ ' + err.message + '（要用 npm run serve 开服务器）';
+  throw err;
+}
+
+// ---------- 自动循环 ----------
+let step = 0, since = 0;
+let started = false;
+
+function enter(i) {
+  step = i % PLAN.length;
+  since = 0;
+  rig.locked = true;
+  rig.setMode(PLAN[step][0]);
+  document.getElementById('state').textContent = LABEL[PLAN[step][0]] || PLAN[step][0];
+}
+
+// ---------- 主循环 ----------
+let last = performance.now(), frames = 0, t0 = performance.now(), fps = 0;
+const $ = (id) => document.getElementById(id);
+
+function tick(now) {
+  const dtMs = now - last;
+  last = now;
+
+  if (!started) { started = true; enter(0); }
+
+  since += dtMs / 1000;
+  if (since >= PLAN[step][1]) enter(step + 1);
+
+  // 鼠标 = 画面中心偏一点，让眼动有东西可跟（歇着时才跟）
+  rig.mouse.x = CANVAS_PX * 0.72;
+  rig.mouse.y = CANVAS_PX * 0.42;
+  rig.mouse.on = true;
+
+  rig.step(dtMs);
+  rig.render();
+
+  frames++;
+  if (now - t0 >= 1000) {
+    fps = Math.round((frames * 1000) / (now - t0)); frames = 0; t0 = now;
+    $('fps').textContent = fps;
+    $('set').textContent = rig.setName + '·' + (rig.currentSet ? Object.keys(rig.currentSet.parts).length : 0) + '件';
+    $('ph').textContent = rig.ph.toFixed(1);
+    $('by').textContent = rig.bodyY.toFixed(2);
+    $('fa').textContent = `(${rig.foot.a.x.toFixed(1)}, ${rig.foot.a.y.toFixed(1)})`;
+    $('fb').textContent = `(${rig.foot.b.x.toFixed(1)}, ${rig.foot.b.y.toFixed(1)})`;
+    const g = rig.gaze || {};
+    $('gh').textContent = `(${(g.hx || 0).toFixed(2)}, ${(g.hy || 0).toFixed(2)})px`;
+    $('gp').textContent = `${(g.pupil || 0).toFixed(2)}px`;
+    $('ga').textContent = g.follow ? `${(g.ang || 0).toFixed(1)}°` : '不跟';
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

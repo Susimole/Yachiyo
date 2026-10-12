@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>八千代 · 菜单</title>
+<link rel="stylesheet" href="./overlay.css">
+</head>
+<body class="light">
+<div class="card">
+
+  <!-- 顶部：可拖动（-webkit-app-region:drag），右边的按钮 no-drag -->
+  <div class="bar">
+    <img class="ava" src="./assets/icon.ico" alt="">
+    <span class="title">八千代</span>
+    <span class="spacer"></span>
+    <!-- 原来是「暂停」（接 moveEnabled）—— 跟菜单里那项「桌宠移动」重复了，
+         2026-10-12 换成「置顶」：那个才是真的没有别的入口 -->
+    <button id="tTop" title="总在最前"></button>
+    <button id="tGear"  title="设置"></button>
+    <button id="tPower" class="danger" title="退出"></button>
+  </div>
+
+  <div class="pad scroll">
+    <div class="m-list" id="mList"></div>
+  </div>
+</div>
+
+<!-- 退出确认 -->
+<div class="veil" id="veil">
+  <div class="ask">
+    <div class="q" id="askQ">确认退出保存吗</div>
+    <div class="acts">
+      <button id="askNo">再想想</button>
+      <button id="askYes" class="main">确定</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="./ui/menu.js"></script>
+</body>
+</html>

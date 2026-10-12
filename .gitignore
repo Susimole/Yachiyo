@@ -1,0 +1,56 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+out/
+build/
+
+# 探路 / 调试留下的临时文件
+_boot.log
+_o.txt
+_e.txt
+_v*.txt
+_shot-*.png
+_probe-shot.png
+_probe.log
+_log-*.txt
+_selfcheck-home*/
+_selfcheck-*.json
+*.tsbuildinfo
+# 探针的出图目录（probe-*.cjs 开头就 rmSync 重建，别进仓库）
+_*shots/
+_probe-*/
+_cap*/
+# 早期探针留下的（名字跟别的规矩对不上，单独列）
+AI_workGit_probe-*/
+_preview-check/
+_ui/
+_tmp_*/
+_*.png
+
+# 本地配置与密钥（各家自己填，不进仓库）
+# ⚠️ .npmrc 里是本机镜像地址（阿里/淘宝），填了不进仓库
+.npmrc
+.env
+.env.local
+*.key
+config.local.*
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 倾斜角预览的中间产物（make-tilt-preview.cjs 已经不需要它了，留着以防旧脚本）
+_tilt-data.json
+_tilt-preview-data.json
+_preview-check/
+
+# 倾斜角探针的出图
+_tilt-shots/
+_probe-tilt-home/
+
+# 骨架参数的历次备份（rigparams.cjs 每次改之前会存一份）
+rig.json.bak*
