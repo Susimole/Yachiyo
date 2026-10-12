@@ -1301,6 +1301,11 @@ export function showPage(k) {
    * 调试台没开的时候 `window.__designAttach` 是 undefined 或者自己 return，
    * 这一句对一个普通用户来说等于不存在。
    */
+  /*
+   * ⚠️ **每次重画都调**，不只是调试态 —— 他改过文字之后，**切页**同样会重画，
+   *    不重新铺一遍，改过的字就当场打回原样了（那就谈不上"即时生效"）。
+   *    调试台没启用过时 `__designAttach` 是 undefined，这一句等于不存在。
+   */
   try { if (window.__designAttach) window.__designAttach(); } catch (err) { console.error('[设置] 调试台回挂失败：' + err.message); }
 }
 

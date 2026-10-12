@@ -76,7 +76,15 @@ async function main() {
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ELECTRON_NO_ATTACH_CONSOLE;
   env.YACHIYO_HOME = HOME;
-  try { fs.rmSync(path.join(HOME, 'design.json'), { force: true }); } catch { /* 本来就没有 */ }
+  /*
+   * ★ 跑法有两种：
+   *    node scripts/probe-design.cjs            —— 正常跑，**先清盘**（干净起点）
+   *    node scripts/probe-design.cjs --keep     —— 保留上次的 design.json，
+   *                                                用来看"重启之后改动还在不在"
+   * 他自己撞到的那个 bug 就是"改动会丢"，所以"重启还在"必须单独验一次。
+   */
+  const KEEP = process.argv.includes('--keep');
+  if (!KEEP) { try { fs.rmSync(path.join(HOME, 'design.json'), { force: true }); } catch { /* 本来就没有 */ } }
 
   const electron = require('electron');
   const child = spawn(electron, ['.', `--remote-debugging-port=${PORT}`],
@@ -94,6 +102,28 @@ async function main() {
 
   const MAIN = await connect(mainT);
   await sleep(1500);
+
+  /*
+   * ★ `--keep` 模式：只看一件事 —— **上次改的东西，重启之后回来了没有**。
+   *   这是"即时生效"的最终证明：改完落盘 → 关掉 → 再开 → 还在。
+   */
+  if (KEEP) {
+    console.log('');
+    console.log('=== ★ 重启持久化检查（--keep）===');
+    const back = await MAIN.ev(`(async () => {
+      const j = await window.yachiyo.ov.designLoad();
+      return j ? { keys: Object.keys(j), side: (j.结构||{})['side-w'], textN: Object.keys(j.文字||{}).length } : null;
+    })()`);
+    chk('盘上的覆盖还在', !!back, back);
+    chk('参数值还在（side-w 有数）', !!(back && back.side > 0), back && back.side);
+    try { child.kill(); } catch { }
+    await sleep(700);
+    killAll();
+    console.log('');
+    console.log(`=== 持久化：${pass.length} 通过 / ${fail.length} 失败 ===`);
+    if (fail.length) for (const f of fail) console.log('  ✗ ' + f);
+    process.exit(fail.length ? 1 : 0);
+  }
 
   console.log('');
   console.log('=== ① 打开设置面板 ===');
@@ -309,6 +339,15 @@ async function main() {
     return j ? JSON.stringify(j).length : 0;
   })()`);
   chk('改动已落到 design.json', typeof put === 'number' && put > 10, put);
+  // 诊断：文件在不在、页面那边调 designPut 成功没
+  const diagWhere = await MAIN.ev(`window.yachiyo.ov.designWhere()`);
+  const diagExists = diagWhere ? fs.existsSync(diagWhere) : false;
+  chk('（诊断）文件真的在盘上', diagExists, diagWhere);
+  const putTry = await P.ev(`(async () => {
+    try { const r = await window.yachiyo.ov.designPut({结构:{"probe":1},文字:{},分组移动:[]}); return r; }
+    catch (e) { return { err: e.message }; }
+  })()`);
+  console.log('  （诊断）从**面板**直接 designPut：' + JSON.stringify(putTry));
 
   // ★★ 切页再回来 —— 这是"改动失效"的那一步
   await P.ev(`(() => { const n=[...document.querySelectorAll('#navs .nav')].find(x=>x.dataset.k==='habit'); if(n) n.click(); })()`);
@@ -426,15 +465,28 @@ async function main() {
       editables: document.querySelectorAll('.d-editable').length,
       inlineVars: card.getAttribute('style') || '',
       sideW: getComputedStyle(document.querySelector('.p-side')).width,
+      // 标记（data-something）留着、但不可编辑 —— 这俩得分开量
+      stillMarked: document.querySelectorAll('[data-dbase]').length,
     };
   })()`);
   chk('.d-on 去掉了', !after.onClass, after.onClass);
   chk('参数栏清掉了', !after.bar);
   chk('轮廓框清掉了', after.marks === 0, after.marks);
   chk('把手清掉了', after.handles === 0, after.handles);
-  chk('可编辑标记清掉了', after.editables === 0, after.editables);
-  chk('内联 CSS 变量清空了', !/--d-/.test(after.inlineVars), after.inlineVars);
-  chk('左栏宽度还原成 158px', after.sideW === '158px', after.sideW);
+  /*
+   * ★★ 2026-10-13 行为改了：**退出调试台 ≠ 还原**。
+   *
+   *   退出 = 收起画图工具（手柄/轮廓/参数栏/可编辑样式）
+   *   还原 = 撤销改动 —— 那是「全部还原」按钮的事
+   *
+   * 他要的是「即时生效」，那就得**退出之后照样看得见**，
+   * 不然改完一退出就回原样，等于没改。
+   * （旧的断言是"变量清空、宽度还原"，那是把两件事混一起了，已改。）
+   */
+  chk('可编辑样式收掉了（.d-editable 归零）', after.editables === 0, after.editables);
+  chk('★ 改过的参数留着（变量还在）', /--d-side-w/.test(after.inlineVars), after.inlineVars);
+  chk('★ 左栏宽度保持改过的值', after.sideW !== '158px', after.sideW);
+  chk('文字仍带标记（退出后还能铺回来）', after.stillMarked > 0, after.stillMarked);
 
   console.log('');
   console.log(`=== 界面调试台：${pass.length} 项通过 / ${fail.length} 项失败 ===`);
@@ -443,7 +495,17 @@ async function main() {
   try { child.kill(); } catch { }
   await sleep(900);
   killAll();
-  try { fs.rmSync(HOME, { recursive: true, force: true }); } catch { }
+  /*
+   * ⚠️⚠️ 这里**一个字都别删**（2026-10-13 栽的）。
+   *
+   *    我原来在这儿 `rmSync(HOME, {recursive:true})` 想"下次跑干净点" ——
+   *    结果把 `design.json` 也一起删了，下一遍 `--keep` 读不到东西，
+   *    持久化检查**自己把自己的证据删了**，报一个假失败过来，害我查了半天。
+   *
+   *    ⇒ 「干净起点」改到**开头**做（见上面 `if (!KEEP)` 那行清 design.json）。
+   *      结尾留着文件 —— 那才是 `--keep` 要验的东西。
+   *      目录落在系统 temp 里，系统会回收，不用我们操心。
+   */
   process.exit(fail.length ? 1 : 0);
 }
 
