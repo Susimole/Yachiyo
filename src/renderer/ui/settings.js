@@ -9,16 +9,18 @@
 import { svg } from './icons.js';
 import { fontState } from './font.js';
 import { makeHost } from './host.js';
-/*
- * 界面调试台（只有高级页最下面那颗按钮会用到）。
- * ⚠️ design.js 反过来 import 本文件的 showPage —— 这是个**环**。
- *    能成立是因为：两边都是函数声明 / 顶层导出，**没有模块级立即执行**，
- *    ESM 的 live binding 到调用时才解引用。别往这两个文件里加顶层副作用。
- */
-import * as design from './design.js';
 
 let api = null;       // { cfg, setCfg, reset, onChanged }
 let curPage = 'habit';
+
+/**
+ * 现在跑的是开发版吗 —— 由 preload 按主进程的 `app.isPackaged` 给（`window.yachiyo.dev`）。
+ *
+ * 全工程**只有一处**判断（就是这儿），给「界面调试台」那道锁用：
+ *   正式版里那颗按钮不建、整组不画、`design.js` 也不加载。
+ * 用函数而不是顶层常量：preload 的注入时机不保证在模块求值之前。
+ */
+const DEV = () => !!(window.yachiyo && window.yachiyo.dev);
 
 /* ============================================================
    页面描述
@@ -477,7 +479,7 @@ export const PAGES = [
        *    所以它是整个面板的**最后一行**，按钮走 `.btn.quiet`（灰的，没有强调色）。
        *    它干什么用、怎么退出，见 ui/design.js 的文件头。
        */
-      { title:'界面调试', rows:[
+      { title:'界面调试', devOnly:true, rows:[
         { t:'custom', key:'designEntry' },
       ]},
     ],
@@ -1062,11 +1064,28 @@ function mountCfgPath(cell) {
  * 底部弹出一条参数栏。退出时全部销毁，面板一个像素都不变（见 design.js 文件头）。
  */
 function mountDesignEntry(cell) {
+  /*
+   * ⚠️⚠️ **正式版里这个按钮根本不存在**（他 2026-10-13 说的：
+   *    「调试台可不能打包进去」）。
+   *
+   * 判据是 `window.yachiyo.dev` —— 由 preload 按主进程的 `app.isPackaged` 给。
+   * 正式版它为 false ⇒ 这里直接 return，**连按钮都不建**，
+   * 而且 `design.js` 走的是**动态 import**，所以那个模块在正式版里
+   * 连加载都不会加载（顶层副作用一个都不跑）。
+   *
+   * ⚠️ 别改成静态 `import * as design from './design.js'` —— 那样不管用不用，
+   *    模块都会被拉进打包产物并执行。现在的写法才叫"没打包进去"。
+   */
+  if (!DEV()) return;
+
   const b = document.createElement('button');
   b.type = 'button';
   b.className = 'btn quiet';
   b.textContent = '界面调试台';
-  b.onclick = () => design.enable();
+  b.onclick = () => {
+    // 点了才去加载 —— 平时它连模块都不进
+    import('./design.js').then((m) => m.enable()).catch(() => { /* 加载不了就算了 */ });
+  };
   cell.appendChild(b);
 }
 
@@ -1156,6 +1175,13 @@ export function showPage(k) {
   main.innerHTML = `<h2>${esc(p.title)}</h2><div class="desc">${esc(p.desc)}</div>`;
 
   for (const g of p.groups) {
+    /*
+     * ⚠️ 标了 `devOnly` 的组**正式版整组不画** —— 连那个框带标题一起。
+     *    我第一版只在行里判断（`mountDesignEntry` 里 `if (!DEV) return`），
+     *    结果正式版里留下一个**只有标题的空框**：「界面调试」四个字照样露出来。
+     *    探针（probe-packaged.cjs 第 ④ 组）当场抓到的。
+     */
+    if (g.devOnly && !DEV()) continue;
     const box = document.createElement('div');
     box.className = 'group';
     if (g.title) box.innerHTML = `<div class="g-title">${esc(g.title)}</div>`;
