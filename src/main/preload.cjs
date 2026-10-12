@@ -147,6 +147,14 @@ contextBridge.exposeInMainWorld('yachiyo', {
     design: (on)         => ipcRenderer.send('ov:design', !!on),
     /** 调试台「保存成文件」—— 存到桌面并在资源管理器里点亮它 */
     designSave: (text)   => ipcRenderer.invoke('design:save', text),
+    /*
+     * ★ 调试台的**即时生效**那套（改了就落盘，重启也在）——
+     *   存的是一份**覆盖**，源码里的默认值一个字都不动，随时能清掉。
+     */
+    designLoad:  ()      => ipcRenderer.invoke('design:load'),
+    designPut:   (data)  => ipcRenderer.invoke('design:put', data),
+    designClear: ()      => ipcRenderer.invoke('design:clear'),
+    designWhere: ()      => ipcRenderer.invoke('design:where'),
     /**
      * ★★ **只给探针用**：把主窗口收到的 `bubble:*` 事件重放一遍。
      *

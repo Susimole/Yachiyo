@@ -340,6 +340,50 @@ ipcMain.on('ov:close-kind', (_e, kind) => {
 ipcMain.on('ov:design', (_e, on) => { overlay.designMode(!!on); });
 
 /**
+ * ★★ 界面调试台 —— **改了就即时生效**（他 2026-10-13 要的）。
+ *
+ * 存在 `%APPDATA%\Yachiyo\design.json`，运行时覆盖源码里的默认值：
+ *   结构（CSS 变量）/ 文字（各处的文案）/ 分组移动（哪个组摆在哪一页）
+ *
+ * ⚠️ 为什么不是「导出 JSON 交给辉夜改代码」：那是原来那套 ——
+ *    他每改一个数都要等一轮。这个文件只是**覆盖**，源码一个字不动，
+ *    所以他随时能「清除覆盖」一键回到出厂，我也可以随时把这些值合并回源码。
+ *
+ * ⚠️ 写盘是**防抖**的（页面那边 400ms），不然拖滑块会一路把磁盘刷爆。
+ * ⚠️ 读失败（文件不存在 / JSON 坏了）一律当"没有覆盖" —— 绝不能因为
+ *    一个坏文件把设置面板整个打不开。
+ */
+const DESIGN_FILE = () => path.join(cfg.DIR, 'design.json');
+
+function readDesign() {
+  try {
+    const raw = fs.readFileSync(DESIGN_FILE(), 'utf8');
+    const j = JSON.parse(raw);
+    return (j && typeof j === 'object') ? j : null;
+  } catch { return null; }
+}
+
+function writeDesign(data) {
+  try {
+    const dir = path.dirname(DESIGN_FILE());
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(DESIGN_FILE(), JSON.stringify(data, null, 2), 'utf8');
+    return { ok: true, file: DESIGN_FILE(), bytes: Buffer.byteLength(JSON.stringify(data)) };
+  } catch (err) {
+    plog('[调试台] 存 design.json 失败：' + err.message);
+    return { ok: false, why: err.message };
+  }
+}
+
+ipcMain.handle('design:load', () => readDesign());
+ipcMain.handle('design:put', (_e, data) => writeDesign(data && typeof data === 'object' ? data : {}));
+ipcMain.handle('design:clear', () => {
+  try { fs.rmSync(DESIGN_FILE(), { force: true }); } catch { /* 本来就没有 */ }
+  return { ok: true };
+});
+ipcMain.handle('design:where', () => DESIGN_FILE());
+
+/**
  * 界面调试台「保存成文件」—— 存到桌面，存完**在资源管理器里高亮它**。
  *
  * ⚠️⚠️ 为什么非要有这一条（他 2026-10-13 报「没找到 JSON 放在哪了」）：

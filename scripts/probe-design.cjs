@@ -71,9 +71,12 @@ async function main() {
   await sleep(600);
 
   const env = { ...process.env };
+  /* ⚠️ 开跑前先把上次的 design.json 清掉 —— 不然改动还在可能是上一轮的残留，
+     测试就成了自欺欺人。（YACHIYO_HOME 是隔离的，只影响探针这次跑的目录。） */
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ELECTRON_NO_ATTACH_CONSOLE;
   env.YACHIYO_HOME = HOME;
+  try { fs.rmSync(path.join(HOME, 'design.json'), { force: true }); } catch { /* 本来就没有 */ }
 
   const electron = require('electron');
   const child = spawn(electron, ['.', `--remote-debugging-port=${PORT}`],
@@ -260,6 +263,81 @@ async function main() {
   chk('还原后「说话」组不在「习惯」页了', afterReset && afterReset.hasShuo === false, afterReset && afterReset.titles);
 
   console.log('');
+  console.log('=== ③d ★ 即时生效 / 改动不丢（他 2026-10-13 要的）===');
+  /*
+   * 他报的原话：「改成我做修改即时生效吧，每次切换分组后都会让之前的改动失效」。
+   *
+   * 根因：`showPage` 重画 `#pMain` 时新 DOM 是从 PAGES 重新生成的，
+   *      你 contenteditable 敲进去的字**没有任何地方存着**，重建一次就没了。
+   *
+   * 这段验四件事：
+   *   ① 改了文字 → 当场落盘（design.json 里有）
+   *   ② 切页再回来 → 改过的字**还在**（这条就是"不失效"）
+   *   ③ 改了参数 → 也在盘里
+   *   ④ 「全部还原」能把盘清掉
+   */
+  const edit1 = await P.ev(`(() => {
+    document.querySelectorAll('.d-editable').forEach(e => { e.contentEditable = 'false'; });
+    const n = [...document.querySelectorAll('#navs .nav')].find(x => x.dataset.k === 'adv');
+    if (n) n.click();
+    return true;
+  })()`);
+  await sleep(1200);
+
+  const TAG = '【这行改过了】';
+  const setIt = await P.ev(`(() => {
+    const el = document.querySelector('#pMain .d-editable.c-label');
+    if (!el) return { err: '没有可编辑的行标签' };
+    const old = el.textContent;
+    el.textContent = ${JSON.stringify(TAG)};
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return { old, nw: el.textContent, key: el.dataset.dscope + '/' + el.dataset.dbase };
+  })()`);
+  chk('能改行标签并触发保存', !!(setIt && !setIt.err), setIt && (setIt.err || setIt.key));
+  await sleep(900);   // 等防抖落盘（400ms）
+
+  /*
+   * ⚠️ 直接问主进程要盘上的内容，**别信界面上的提示** ——
+   *    「✓ 已生效」那种话自己说给自己听不算数。
+   * ⚠️ 必须包成 async IIFE：`Runtime.evaluate` 的 awaitPromise 只等返回值，
+   *    顶层裸 `await` 会直接抛 SyntaxError（踩过）。
+   */
+  const put = await MAIN.ev(`(async () => {
+    const api = window.yachiyo && window.yachiyo.ov;
+    if (!api || !api.designLoad) return -1;
+    const j = await api.designLoad();
+    return j ? JSON.stringify(j).length : 0;
+  })()`);
+  chk('改动已落到 design.json', typeof put === 'number' && put > 10, put);
+
+  // ★★ 切页再回来 —— 这是"改动失效"的那一步
+  await P.ev(`(() => { const n=[...document.querySelectorAll('#navs .nav')].find(x=>x.dataset.k==='habit'); if(n) n.click(); })()`);
+  await sleep(1000);
+  await P.ev(`(() => { const n=[...document.querySelectorAll('#navs .nav')].find(x=>x.dataset.k==='adv'); if(n) n.click(); })()`);
+  await sleep(1200);
+  const afterRound = await P.ev(`(() => {
+    const els = [...document.querySelectorAll('#pMain .d-editable.c-label')];
+    const hit = els.find(e => e.textContent.includes('这行改过了'));
+    return { found: !!hit, sample: els.slice(0,3).map(e => e.textContent) };
+  })()`);
+  chk('★ 切页回来后改过的字还在', !!(afterRound && afterRound.found), afterRound);
+
+  // 参数改动也要落盘
+  const paramOk = await P.ev(`(() => {
+    const inp = [...document.querySelectorAll('.d-bar input[data-vk]')].find(i => i.dataset.vk === '--d-side-w');
+    if (!inp) return { err: '没有左栏宽输入框' };
+    inp.value = '177';
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    return { set: true };
+  })()`);
+  await sleep(900);
+  const paramDisk = await MAIN.ev(`(async () => {
+    const j = await window.yachiyo.ov.designLoad();
+    return (j && j.结构 && j.结构['side-w']) || null;
+  })()`);
+  chk('参数改动也落盘了（side-w=177）', paramDisk === 177, paramDisk);
+
+  console.log('');
   console.log('=== ④ 改一个值，看有没有真的作用到样式 ===');
   const sideBefore = await P.ev(`getComputedStyle(document.querySelector('.p-side')).width`);
   const sideAfter = await P.ev(`(() => {
@@ -285,13 +363,23 @@ async function main() {
   chk('快照有「文字」段', !!(json && json.文字), json && json.文字);
   // 串页/重复检查（比只看一个键更能说明问题）
   const tk = Object.keys(json.文字 || {});
-  const crossPage = tk.filter(k => /倾斜角|帧率上限|网格精度|识屏/.test(json.文字[k] || ''));
+  /*
+   * ★ 串页判据用**组 id 前缀**，不靠文案内容猜。
+   *
+   * ⚠️ 我第一版拿 `/倾斜角|帧率上限/` 这种关键词去匹配**文案** —— 那是错的：
+   *    当前页（高级）本来就有「倾斜角」这一行，结果把**正常内容**报成了串页。
+   *    而且换个页就得重挑关键词，脆得很。
+   * 正确判据：这一页是 `adv`，那组键**只能**是 `adv#N/...`；
+   *    冒出 `habit#` / `weather#` 才是真串了。
+   */
+  const crossPage = tk.filter(k => /^[a-z]+#\d+\//.test(k) && !k.startsWith('adv#'));
   chk('导出没有串进别的页的文案', crossPage.length === 0, crossPage);
-  const gkeys = tk.filter(k => /^group./.test(k));
+  // 分组标题的键现在长这样：`adv#2/title`（组 id + / + base）
+  const gkeys = tk.filter(k => /^[a-z]+#\d+\/title$/.test(k));
   chk('分组标题键不重复', new Set(gkeys).size === gkeys.length && gkeys.length > 0, gkeys.length + ' 个');
-  chk('面板级文字没丢', tk.includes('panel.title') && tk.includes('panel.brand'), tk.filter(k=>/^panel/.test(k)));
-  chk('文字段抓到顶栏标题', !!(json && json.文字 && json.文字['panel.title']),
-    json && json.文字 && json.文字['panel.title']);
+  chk('面板级文字没丢', tk.includes('panel/title') && tk.includes('panel/brand'), tk.filter(k=>/^panel/.test(k)));
+  chk('文字段抓到顶栏标题', !!(json && json.文字 && json.文字['panel/title']),
+    json && json.文字 && json.文字['panel/title']);
 
   // ★ 点了「导出 JSON」应该**弹出一个能看见内容的框**（他上一轮报「没找到 JSON 在哪」）
   await P.ev(`(() => { const b=[...document.querySelectorAll('.d-bar .d-btn')].find(x=>/导出/.test(x.textContent)); if(b) b.click(); })()`);

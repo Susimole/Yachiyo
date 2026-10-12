@@ -108,12 +108,22 @@ const NUM_PARAMS = [
   { g:'字距', k: '--d-hint-gap',  label: '提示文字上距', min: 0, max: 8,  step: 1,   def: 1,    sel: '.row .label small' },
 ];
 
-/** 面板上**固定那几处**文字（跟当前在哪一页无关） */
+/**
+ * 面板上**固定那几处**文字。
+ *
+ * ⚠️ `scope` / `base` **分开写**，导出和存盘时拼成 `scope/base`：
+ *    · `panel/title`  —— 顶栏标题，全面板只有一处
+ *    · `page:adv/title` —— 页面标题，**按页各存各的**
+ *      （不分开的话，「习惯」页改过的介绍会跟着跑到「高级」页去）
+ *
+ * ⚠️ 别写成 `panel:panel.title` 这种 —— 之前就是这么写的，键名啰嗦一倍，
+ *    而且跟别处的命名规则对不上。
+ */
 const TEXT_PARAMS = [
-  { k: 'panel.title', label: '顶栏标题', sel: '.bar .title' },
-  { k: 'panel.brand', label: '左栏署名', sel: '.p-foot b' },
-  { k: 'page.title',  label: '页面标题', sel: '#pMain h2' },
-  { k: 'page.desc',   label: '页面介绍', sel: '#pMain .desc' },
+  { scope: 'panel',            base: 'title', sel: '.bar .title' },
+  { scope: 'panel',            base: 'brand', sel: '.p-foot b' },
+  { scope: 'PAGE',             base: 'title', sel: '#pMain h2' },     // PAGE = 按页
+  { scope: 'PAGE',             base: 'desc',  sel: '#pMain .desc' },
 ];
 
 /**
@@ -129,21 +139,34 @@ function makeContentEditable() {
   if (!main) return;
   const groups = $$('#pMain .group');
 
-  groups.forEach((box, gi) => {
+  /*
+   * ★★ scope 用**组 id**（`data-dgroup` = PAGES 里那个 `__gid`），不用"第几组"。
+   *
+   * ⚠️ 为什么：他要**在页面之间搬分组**。搬完之后序号全变了 ——
+   *    「习惯页第 0 组」搬到高级页可能变成第 3 组，
+   *    用序号当 key 的话，他在习惯页改的文字会**串到高级页去**。
+   *    `__gid`（`页#序号`，在 settings.js 里定死）是跟着分组走的，搬到哪都认得出。
+   *
+   * 键的格式：`<scope>|<组内键>` —— `|` 由 wrapEditable 切开。
+   */
+  groups.forEach((box) => {
+    const gid = box.dataset.dgroup || 'anon';
+    const key = (base) => gid + '|' + base;
+
     // 分组标题
     const gt = $('.g-title', box);
-    if (gt) wrapEditable(gt, `group.${gi}.title`, 'c-gtitle');
+    if (gt) wrapEditable(gt, key('title'), 'c-gtitle');
 
     $$('.row', box).forEach((row, ri) => {
       const lab = $('.label', row);
       if (lab) {
         // 标签本身（跳过里面的 <small> / <i class="todo">）
-        wrapEditable(lab, `row.${gi}.${ri}.label`, 'c-label', { skipChildren: true });
+        wrapEditable(lab, key(`r${ri}.label`), 'c-label', { skipChildren: true });
         const hint = $('small', lab);
-        if (hint) wrapEditable(hint, `row.${gi}.${ri}.hint`, 'c-hint');
+        if (hint) wrapEditable(hint, key(`r${ri}.hint`), 'c-hint');
       }
       const btn = $('.body .btn', row);
-      if (btn) wrapEditable(btn, `row.${gi}.${ri}.btn`, 'c-btn');
+      if (btn) wrapEditable(btn, key(`r${ri}.btn`), 'c-btn');
     });
   });
 
@@ -162,9 +185,20 @@ function wrapEditable(host, key, cls, o = {}) {
   const own = [...host.childNodes].filter((n) => n.nodeType === 3 && n.textContent.trim());
   if (!own.length) return;
 
+  /*
+   * ★ 键分两截（`key` 里已经含了 scope）：
+   *   `data-dscope` = 组 id 或 `page:<页>`；`data-dbase` = 组内那一项的键。
+   *   组 id 用 `__gid`（跨页稳定），行/项用序号 —— 见 makeContentEditable 处的说明。
+   */
+  const cut = key.indexOf('|');
+  const scope = cut > 0 ? key.slice(0, cut) : '';
+  const base = cut > 0 ? key.slice(cut + 1) : key;
+
   const span = document.createElement('span');
   span.className = 'd-editable ' + cls;
   span.dataset.dkey = key;
+  span.dataset.dscope = scope;
+  span.dataset.dbase = base;
   span.textContent = own[0].textContent.trim();
 
   if (o.skipChildren) {
@@ -178,6 +212,23 @@ function wrapEditable(host, key, cls, o = {}) {
   span.contentEditable = 'true';
   span.spellcheck = false;
   span.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); span.blur(); } }, true);
+
+  /*
+   * ★★ 敲一个字就落实（`input`），不是等失焦。
+   *    他 2026-10-13 报的「切换分组后改动失效」就是这里没存 ——
+   *    旧版只把字留在 DOM 里，重画一次就没了。
+   *
+   * ⚠️ 只写 `state` + 防抖落盘，**不动 DOM**：正在打字的元素不能去改它的 textContent，
+   *    那会把光标顶到末尾（中文输入法下尤其难受）。
+   */
+  span.addEventListener('input', () => {
+    const v = (span.textContent || '').trim();
+    if (!state.文字[scope]) state.文字[scope] = {};
+    state.文字[scope][base] = v;
+    span.classList.add('d-edited');
+    scheduleSave();
+  });
+
   textEls.set(key, span);       // 记进本轮（退出调试台时要按它把类摘干净）
 }
 
@@ -375,7 +426,11 @@ function buildBar() {
       inp.oninput = () => {
         const n = Number(inp.value);
         if (!Number.isFinite(n)) return;
-        setVar(p.k, Math.max(p.min, Math.min(p.max, n)));
+        const v = Math.max(p.min, Math.min(p.max, n));
+        setVar(p.k, v);
+        // ★ 记进状态并落盘 —— 这样切页/重启都还在
+        state.结构[p.k.replace(/^--d-/, '')] = v;
+        scheduleSave();
         drawMarks();
       };
       row.appendChild(inp);
@@ -396,17 +451,23 @@ function buildBar() {
   bReset.className = 'd-btn';
   bReset.textContent = '全部还原';
   bReset.title = '参数 + 分组摆放，都回到原样';
-  bReset.onclick = () => {
+  bReset.onclick = async () => {
     const card = $('.card');
     for (const p of NUM_PARAMS) card.style.removeProperty(p.k);
     /*
-     * ⚠️ 分组搬动也要一起还原 —— 按钮写着「全部还原」，
-     *    只清参数、留着搬动的话名不副实。（只管参数的那个老版本叫「还原」。）
+     * ★ 「全部还原」= 把**存下来的覆盖**整个清掉。
+     *
+     * ⚠️ 光清变量不够 —— 文字改动和分组搬动都在 `state` 里、还落了盘，
+     *    不清盘的话下次进调试台它们又回来了，按钮就名不副实。
+     *    （旧版本还叫「还原」的时候只管参数，那是错的。）
      */
+    state = { 结构: {}, 文字: {}, 分组移动: [] };
+    savedTextKeys.clear();
     moves = [];
     if (setOverrideFn) setOverrideFn(new Map());
+    try { await window.yachiyo?.ov?.designClear?.(); } catch { /* 删不掉就算了 */ }
     showPageNow();
-    flash('✓ 已全部还原');
+    flash('✓ 已全部还原（覆盖文件也删了）');
   };
 
   const bExit = document.createElement('button');
@@ -414,7 +475,21 @@ function buildBar() {
   bExit.textContent = '退出调试';
   bExit.onclick = () => disable();
 
-  right.append(bOut, bReset, bExit);
+  /*
+   * ★ 告诉他改动存哪儿了 —— 他上一轮就是「没找到 JSON 放在哪」。
+   *   小字灰字，不抢眼，但找得到。
+   */
+  const hint = document.createElement('div');
+  hint.className = 'd-where';
+  hint.textContent = '改动即时生效，存在：';
+  const pathLine = document.createElement('div');
+  pathLine.className = 'd-where-p';
+  pathLine.textContent = '（读路径中…）';
+  Promise.resolve(window.yachiyo?.ov?.designWhere?.()).then(
+    (p) => { if (p) pathLine.textContent = p; },
+    () => { pathLine.textContent = '%APPDATA%\\Yachiyo\\design.json'; });
+
+  right.append(bOut, bReset, bExit, hint, pathLine);
 
   bar.append(left, right);
   $('.card').appendChild(bar);
@@ -439,29 +514,45 @@ function syncInputs() {
  *   `attachToPage` 每次重画都会再跑一遍 `makeEditable`，
  *   不防的话会给它们**叠一堆一模一样的 keydown 监听**（跑一百次就一百个）。
  */
-function markEditable(el, key, cls) {
-  el.dataset.dkey = key;
+function markEditable(el, dkey, scope, base, cls) {
+  el.dataset.dkey = dkey;         // 导出扫 DOM 用的原始键
+  el.dataset.dscope = scope;
+  el.dataset.dbase = base;
   el.contentEditable = 'true';
   el.spellcheck = false;
   el.classList.add('d-editable');
   if (cls) el.classList.add(cls);
-  // ⚠️ 监听器**只挂一次**（`marked` 小写是 JS 侧的私有标记，跟 dkey 分开）：
+  // ⚠️ 监听器**只挂一次**（`marked` 是 JS 侧私有标记）：
   //    顶栏标题那几处不随页重建，`attachToPage` 每重画一次就会再标一次，
   //    不防的话会叠一堆一模一样的监听器。
   if (el.dataset.marked) return;
   el.dataset.marked = '1';
   el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } }, true);
+  el.addEventListener('input', () => {
+    const v = (el.textContent || '').trim();
+    if (!state.文字[scope]) state.文字[scope] = {};
+    state.文字[scope][base] = v;
+    el.classList.add('d-edited');
+    scheduleSave();
+  });
 }
 
 function makeEditable() {
   textEls.clear();          // ★ 每次重建 —— 不"记账"，只记这一轮挂上去的
 
-  // ① 固定那几处（顶栏标题 / 左栏署名 / 页面标题 / 页面介绍）
+  /*
+   * ① 固定那几处（顶栏标题 / 左栏署名 / 页面标题 / 页面介绍）
+   *
+   * ⚠️ 页面标题和介绍**按页各存各的** —— scope 用 `page:<页>`。
+   *    不然「习惯」页改过的介绍会跟着跑到「高级」页去。
+   */
+  const pageScope = 'page:' + (curPage || '?');
   for (const t of TEXT_PARAMS) {
     const el = $(t.sel);
     if (!el) continue;
-    markEditable(el, t.k, null);
-    textEls.set(t.k, el);
+    const sc = (t.scope === 'PAGE') ? pageScope : t.scope;
+    markEditable(el, `${sc}|${t.base}`, sc, t.base, null);
+    textEls.set(`${sc}|${t.base}`, el);
   }
   // ② 页面上跟着内容走的那批（分组标题 / 每行的标签和提示 / 按钮）
   makeContentEditable();
@@ -512,6 +603,88 @@ function clearEditable() {
 
 let moves = [];                 // [{gid, to, at}] —— 导出用，也是重画的依据
 
+/* ============================================================
+   ★★ 覆盖状态 —— 改了就生效，不是"导出给辉夜改代码"
+   ============================================================
+   他 2026-10-13 的原话：「改成我做修改即时生效吧，每次切换分组后都会让之前的改动失效」。
+
+   ⚠️⚠️ 那个"失效"的根因就在这儿：`showPage` 重画 `#pMain` 时，
+      **新 DOM 是从 PAGES 的数据重新生成的** —— 你 contenteditable 敲进去的字
+      没有任何地方存着，重建一次就没了。改参数也一样（变量挂在 .card 上所以活着，
+      但那只是运气好）。
+
+   ⇒ 所有改动都记在 `state` 里，**每次重画之后自动写回 DOM**；
+      并且防抖落盘到 `%APPDATA%\Yachiyo\design.json`，重启也还在。
+   ============================================================ */
+let state = { 结构: {}, 文字: {}, 分组移动: [] };
+let savedTextKeys = new Set();   // 已经写进过 state 的键 —— 用来判断"基线"从哪儿取
+let saveTimer = null;
+
+/** 从主进程读回上次的覆盖（进调试台时调一次） */
+async function loadState() {
+  const api = window.yachiyo && window.yachiyo.ov;
+  if (!api || !api.designLoad) return;
+  try {
+    const j = await api.designLoad();
+    if (j && typeof j === 'object') {
+      state = { 结构: j.结构 || {}, 文字: j.文字 || {}, 分组移动: j.分组移动 || [] };
+      moves = Array.isArray(state.分组移动) ? state.分组移动.slice() : [];
+    }
+  } catch { /* 读不到就当没有覆盖 */ }
+}
+
+/** 防抖落盘 —— 拖滑块会一路触发，不能每次都写盘 */
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    const api = window.yachiyo && window.yachiyo.ov;
+    if (!api || !api.designPut) return;
+    state.分组移动 = moves.slice();
+    api.designPut(state).then(
+      (r) => { if (r && r.ok) flash('✓ 已生效（' + r.bytes + ' 字节）'); },
+      () => flash('✗ 存不上，看看日志'));
+  }, 400);
+}
+
+/**
+ * 把状态里的覆盖写回 DOM —— **每次重画之后必须调一次**。
+ *
+ * ⚠️ 顺序要紧：先套变量（会改布局），再铺文字（改内容），
+ *    最后才是分组的搬动（它会触发再一次重画）。搬动在 applyOverride 里做。
+ */
+function applyState() {
+  const card = $('.card');
+  if (card) {
+    for (const [k, v] of Object.entries(state.结构 || {})) {
+      if (Number.isFinite(Number(v))) card.style.setProperty('--d-' + k, Number(v) + 'px');
+    }
+  }
+  syncInputs();
+  applyTexts();
+}
+
+/**
+ * 把覆盖过的文字铺回 DOM。
+ *
+ * ⚠️ 键的组成见 `keyFor` —— 组用 `__gid`（稳定），行/项用序号。
+ *    用 `gid` 而不是"第几组"是**必须**的：切页之后序号会变，
+ *    用序号的话「习惯页第 0 组」和「高级页第 0 组」会串味。
+ */
+function applyTexts() {
+  const cards = $$('#pMain .d-editable[data-dbase]');
+  for (const el of cards) {
+    const sc = el.dataset.dscope;
+    const base = el.dataset.dbase;
+    const ov = (sc && state.文字 && state.文字[sc]) ? state.文字[sc][base] : undefined;
+    if (ov === undefined) continue;      // 没覆盖过就保持源码原样
+    const t = el.textContent;
+    if (t === ov) continue;
+    el.textContent = ov;
+    el.classList.add('d-edited');
+  }
+  return cards.length;
+}
+
 /** 重建覆盖表并重画当前页 */
 function applyOverride() {
   try {
@@ -558,12 +731,16 @@ function applyOverride() {
 function moveGroup(gid, to, at) {
   moves = moves.filter((m) => m.gid !== gid);
   moves.push({ gid, to, at: typeof at === 'number' ? at : null });
+  state.分组移动 = moves.slice();     // ★ 记进状态并落盘（重启也还在）
+  scheduleSave();
   applyOverride();
 }
 
 /** 撤掉某一次搬动（下拉选"回原来那页"时用） */
 function unlinkGroup(gid) {
   moves = moves.filter((m) => m.gid !== gid);
+  state.分组移动 = moves.slice();
+  scheduleSave();
   applyOverride();
 }
 
@@ -714,6 +891,7 @@ function attachToPage() {
 
   makeEditable();        // 所有文字可编辑（含 47 行的标签/提示）—— 内部会重建记录
   installGroupMove();    // 分组拖拽把手 + 兜底下拉
+  applyState();          // ★★ 把覆盖过的**写回**（文字 + CSS 变量）—— 这一步就是"改动不丢"
   drawMarks();           // 区域轮廓
   syncGroupCtl();
 }
@@ -739,8 +917,13 @@ function snapshot() {
    *    ⇒ 记账就会记错。**DOM 才是真相**：谁带着 `data-dkey` 就导谁。
    *      这样切过多少页都不会串，也不会漏。
    */
+  // ⚠️ 必须是 `$$`（querySelectorAll）—— 写成 `$` 拿到的是单个元素，
+  //    `for...of` 一个 DOM 元素会抛 "not iterable"，**整个导出连坐**（13 项检查全红）。
   for (const el of $$('.d-editable[data-dkey]')) {
-    out.文字[el.dataset.dkey] = (el.textContent || '').trim();
+    // 键用 scope+base 拼（`habit#2/title` 这种），比内部的 `scope|base` 好读
+    const sc = el.dataset.dscope || 'panel';
+    const bs = el.dataset.dbase || el.dataset.dkey;
+    out.文字[sc + '/' + bs] = (el.textContent || '').trim();
   }
 
   // 分组移动（调试台搬过的组）
@@ -853,6 +1036,20 @@ export async function enable() {
   const navOn = $('#navs .nav.on');
   if (navOn && navOn.dataset.k) curPage = navOn.dataset.k;
   card.dataset.dpage = curPage;
+
+  /*
+   * ★★ 顺序要紧（他 2026-10-13 要的「即时生效」）：
+   *   ① 先把上次存下的覆盖读回来（含分组搬动）
+   *   ② 用搬动重建覆盖表 —— **它会触发一次整页重画**，
+   *      而重画末尾的 `__designAttach` 钩子内含 `applyState()`，
+   *      参数和文字就在那一步自动铺回去了
+   *   ③ 最后才挂参数栏和把手（它们长在 `.card` 上，不随页重建）
+   *
+   * ⚠️ 别把 `applyState()` 提到 `applyOverride()` 前面 —— 那时页面还是旧的，
+   *    铺上去马上被重画冲掉。
+   */
+  await loadState();
+  applyOverride();
 
   card.classList.add('d-on');
   buildBar();
