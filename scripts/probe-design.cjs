@@ -34,12 +34,39 @@ function killAll() {
 
 const list = async () => (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
 
-async function connect(t) {
-  const ws = new WebSocket(t.webSocketDebuggerUrl);
-  await new Promise((res, rej) => {
-    ws.addEventListener('open', res, { once: true });
-    ws.addEventListener('error', rej, { once: true });
-  });
+/**
+ * 连一个 CDP target。
+ *
+ * ⚠️ 这里**带重试**（2026-10-13 加的）：面板 / 聊天窗是懒建的，
+ *    `ov.open` 之后 CDP 列表里立刻能看到它，但那一刻**连不上** ——
+ *    `new WebSocket` 直接抛 `Invalid URL`，而**那个 URL 明明是好的**。
+ *    固定 sleep 一下就去连，就会吃到这个（我在这儿连炸三次）。
+ *    ⇒ 连不上就退后 800ms 再试，最多 6 次。
+ */
+async function connect(t, tries = 6) {
+  const target = (t && typeof t === 'object') ? t.webSocketDebuggerUrl : t;
+  if (typeof target !== 'string' || !/^ws/.test(target)) {
+    throw new Error('connect() 拿到的东西不对：' + JSON.stringify(t));
+  }
+  let lastErr = null;
+  let ws = null;
+  for (let i = 0; i < tries; i++) {
+    try {
+      ws = new WebSocket(target);
+      await new Promise((res, rej) => {
+        ws.addEventListener('open', res, { once: true });
+        ws.addEventListener('error', () => rej(new Error('ws error')), { once: true });
+        setTimeout(() => rej(new Error('ws timeout')), 4000);
+      });
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      ws = null;
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  }
+  if (!ws) throw new Error('连不上 CDP（试了 ' + tries + ' 次）：' + (lastErr && lastErr.message) + ' ← ' + target);
   const pending = new Map();
   let seq = 0;
   ws.addEventListener('message', (e) => {
@@ -116,6 +143,43 @@ async function main() {
     })()`);
     chk('盘上的覆盖还在', !!back, back);
     chk('参数值还在（side-w 有数）', !!(back && back.side > 0), back && back.side);
+
+    /*
+     * ★★ 光"盘上有"不算数 —— 得看**面板真的把它用上了没有**。
+     *    这才是他关心的：「重启之后我看到的是不是我调过的样子」。
+     */
+    await MAIN.ev(`window.yachiyo.ov.open('panel', {})`);
+    /*
+     * ⚠️ 面板窗口是**懒建**的：`ov.open` 之后它才创建，而 CDP 的 target 列表
+     *    还要再等一拍才有 `webSocketDebuggerUrl`。
+     *    固定 sleep 一下就去连，会拿到空 URL → `new WebSocket('')` 直接抛
+     *    "Invalid URL"（我第一次就这么炸的）。⇒ 轮询等它真出现。
+     */
+    let pt = null;
+    for (let i = 0; i < 15 && !(pt && pt.webSocketDebuggerUrl); i++) {
+      await sleep(700);
+      pt = (await list()).find((t) => t.type === 'page' && t.url.includes('panel.html'));
+    }
+    /*
+     * ⚠️ 空**字符串**也能过 `!pt.ws` 这种判断 —— 得按类型查。
+     *    面板窗口刚建出来时 CDP 可能给一个空 URL，直接 new WebSocket('') 就炸
+     *    "Invalid URL"（我在这儿连炸两次）。
+     */
+    const wsOk = pt && typeof pt.webSocketDebuggerUrl === 'string' && pt.webSocketDebuggerUrl.startsWith('ws');
+    if (!wsOk) { chk('重启后能打开面板', false, pt ? { url: pt.url, ws: String(pt.webSocketDebuggerUrl) } : '没找到面板 target'); }
+    else {
+      const Pp = await connect(pt.webSocketDebuggerUrl);
+      await sleep(1800);
+      const applied = await Pp.ev(`(() => {
+        const card = document.querySelector('.card');
+        return {
+          sideW: getComputedStyle(document.querySelector('.p-side')).width,
+          vars: card ? (card.getAttribute('style') || '') : '',
+        };
+      })()`);
+      chk('★ 重启后左栏真的还是调过的宽度', applied && applied.sideW === '190px', applied && applied.sideW);
+      chk('★ 重启后变量已套上（没点调试台）', !!(applied && /--d-side-w/.test(applied.vars)), applied && applied.vars);
+    }
     try { child.kill(); } catch { }
     await sleep(700);
     killAll();
