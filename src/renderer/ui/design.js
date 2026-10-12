@@ -1186,6 +1186,22 @@ document.addEventListener('click', (e) => {
   }
 }, true);
 
+/**
+ * ★ 后台预载 —— 设置面板一打开就调（**不等他点调试台**）。
+ *
+ * 为什么：覆盖是「改了就生效」存下来的。要是等到点开调试台才读，
+ *   重启之后第一次看面板**还是原样**，得先点一下调试台才看见自己调过的东西 ——
+ *   那就不叫即时生效了。
+ *
+ * 读完直接走一遍 `__designAttach()`（非调试态分支：铺文字 + 套变量，不挂工具）。
+ */
+export async function preload() {
+  if (stateLoaded) return;
+  stateLoaded = true;
+  await loadState();
+  try { window.__designAttach && window.__designAttach(); } catch { /* 铺不上去就算了 */ }
+}
+
 export const toggle = () => (on ? disable() : enable());
 export const isOn = () => on;
 /** 探针用：不进调试台也能拿到当前快照，用来验导出的数据结构对不对 */

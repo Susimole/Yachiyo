@@ -1212,6 +1212,18 @@ export function initSettings() {
   document.getElementById('pMin').onclick   = () => closePanel();
 
   showPage(curPage);
+
+  /*
+   * ★★ 后台预载调试台的覆盖（`design.json`），**不等用户点调试台**。
+   *
+   * ⚠️ 为什么：覆盖是「改了就生效」那套存下来的。如果等到点开调试台才去读，
+   *    那**重启之后第一次看面板还是原样** —— 他得先点一下调试台才看见自己调过的东西，
+   *    这就不叫"即时生效"了。
+   *
+   * 读完之后 `design.js` 自己会重新跑一遍装饰（见那边的 `__designAttach`），
+   * 所以这里 fire-and-forget 就行，不用 await。
+   */
+  import('./design.js').then((m) => m.preload && m.preload()).catch(() => { /* 读不到就算了 */ });
 }
 
 bootSettings();
