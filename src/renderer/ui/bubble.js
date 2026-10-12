@@ -14,6 +14,36 @@ let typeTimer = null;
 let hideTimer = null;
 let cfgRef = () => ({});
 
+/* ============================================================
+   「准备睡」闸 —— 睡着了，一个气泡都不许冒
+   ============================================================
+   他 2026-10-13 的要求：「桌宠在睡着状态时不会说话也不会有任何气泡弹出」
+
+   ⚠️ 这是**第二道**闸。第一道在主进程的 `sayIt`（那儿挡的是"她要不要说"）；
+      这一道挡的是"说了也不许显示"。两道都留着，因为它们是**不同的失效模式**：
+        · 主进程那道漏了 → 她说的话还在往外发（日志里有，界面上没有）
+        · 渲染层这道漏了 → 只要有任何一个事件绕过了 sayIt（比如
+          `bubble:*` 那条走 runChat 的流、或者以后新加的链），页面就直接冒泡
+      探针实测过：只加主进程那道时，直接重放 `speak:say` 事件照样能冒出来。
+
+   ⚠️ 状态由主进程推（`sleep:changed`），见 app.js —— 页面这边**不要自己猜**
+      （"多久没动"是主进程拿系统空闲时间算的，页面算不出来）。
+   ============================================================ */
+let sleepMode = false;
+
+/** 主进程告诉她"我要睡了 / 我醒了" */
+export function setSleeping(v) { sleepMode = !!v; }
+
+const sleeping = () => sleepMode;
+
+/**
+ * ★ 只给探针看：页面这边的睡眠态。
+ * 探针要能分开验「主进程的状态」和「页面收到的状态」——这俩不一致的时候，
+ * 才知道是通知没送到，还是闸本身没生效（2026-10-13 查这条闸时全靠它）。
+ * 产品逻辑不读它。
+ */
+window.__yachiyoSleepState = () => sleepMode;
+
 /** 收函数不收对象 —— 配置在设置面板里随时会变，抓着旧对象看的是老值 */
 export function initBubble(getCfg) {
   cfgRef = typeof getCfg === 'function' ? getCfg : () => getCfg;
@@ -79,6 +109,7 @@ function place() {
  *    · 每次只重排位置，不动文字以外的任何状态
  */
 export function streamBubble(text) {
+  if (sleeping()) return;                    // ★ 睡着了一个气泡都不冒（见文件末尾）
   clearTimeout(typoTimer); typoWrong = '';   // 新的一句话开始，上一句的口误作废
   const el = bubbleEl();
   el.classList.toggle('clip', (cfgRef() || {}).bubbleOverflow === 'clip');
@@ -160,6 +191,7 @@ function startTypo(fullText) {
 }
 
 export function showBubble(text, opts = {}) {
+  if (sleeping()) return;                    // ★ 同上
   const el = bubbleEl();
   const tx = textEl();
   const cfg = cfgRef() || { bubbleW: 242, bubbleH: 180, bubbleAlpha: 92, bubbleAnchor: 'bl', bubbleSeconds: 8 };

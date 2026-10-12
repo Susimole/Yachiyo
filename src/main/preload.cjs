@@ -6,6 +6,26 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+/**
+ * 现在跑的是开发版还是打包版？
+ *
+ * ⚠️⚠️ **绝对不能用 `require('electron').app.isPackaged`**（2026-10-13 踩的）：
+ *    preload 跑在**沙箱**里，那里的 `require('electron')` **只有
+ *    `contextBridge` / `ipcRenderer` 两个东西**，没有 `app`。
+ *    写成 `app.isPackaged` 会当场抛 `Cannot read properties of undefined`，
+ *    而 Electron 对这个错误的处理方式是 —— **静默放弃整个 preload 脚本**：
+ *         Unable to load preload script: ...\preload.cjs
+ *    ⇒ `window.yachiyo` 整个不存在 ⇒ 气泡、配置、事件**全线失灵**，
+ *      但主进程照常跑、不报致命错，只有渲染层的 console 里有一行提示。
+ *      **这个坑是探针抓出来的**：`typeof window.yachiyo === 'undefined'`。
+ *
+ * ★ 判据由**主进程显式传**（见 index.cjs / overlay.cjs 的 `additionalArguments`）——
+ *   那边 `app.isPackaged` 是可靠的，这边只管读。
+ *   ⚠️ 别退回去自己猜：`process.execPath` 在沙箱里实测**判不出**开发版
+ *      （试过，`DEV` 永远是 false，探针口静默不挂）。
+ */
+const DEV = (process.argv || []).includes('--yachiyo-dev');
+
 contextBridge.exposeInMainWorld('yachiyo', {
   /* ---------- 配置 ---------- */
   cfg: {
@@ -109,6 +129,33 @@ contextBridge.exposeInMainWorld('yachiyo', {
     fit: (h) => ipcRenderer.send('ov:fit', h),
     /** 按名字关某一个（主窗口点她的时候要收掉菜单） */
     closeKind: (kind)    => ipcRenderer.send('ov:close-kind', kind),
+    /**
+     * 界面调试台开关 —— 把**发起调用的那个浮层窗口**放大 / 还原。
+     * 只有设置面板的调试台会调；主进程那边只放大不缩小、退出精确还原。
+     */
+    design: (on)         => ipcRenderer.send('ov:design', !!on),
+    /**
+     * ★★ **只给探针用**：把主窗口收到的 `bubble:*` 事件重放一遍。
+     *
+     * 为什么需要：主进程的 `runChat` **不广播 `speak:say`** ——
+     *   它走的是 `bubble:delta/done`。而主进程里的函数从渲染层调不到，
+     *   所以「她说的话到底有没有变成气泡」这件事，
+     *   探针够不着、自检也够不着（自检不起窗口）。
+     *   有了这个口子，就能在不发真请求（不花钱）的前提下量到真实行为。
+     *
+     * ⚠️ 下面这一整块**只在开发版挂**（`DEV` 见文件头）——
+     *    打包出去给别人的版本里，这几个键根本不存在。产品流程一次都不调它。
+     */
+    ...(DEV ? {
+      _probe: (channel, payload) => ipcRenderer.emit(String(channel), {}, payload),
+      /**
+       * ★★ **只给探针用**：把「准备睡」掰过去 / 掰回来。
+       * 真实进睡要"键鼠停够 55 分钟"，等不起；本机也没有可靠办法伪造用户活动
+       * （`SetThreadExecutionState` / `SendKeys` 实测都重置不了系统空闲计时器）。
+       */
+      _sleep:      (on) => ipcRenderer.invoke('probe:sleep', !!on),
+      _isSleeping: ()   => ipcRenderer.invoke('probe:sleep', null),
+    } : {}),
     /** 某个浮层开着没有 —— 独立窗口的显隐只有主进程知道 */
     isOpen: (kind)       => ipcRenderer.invoke('ov:is-open', kind),
     /** 浮层窗口的真实状态（开着没 / 置顶没 / 摆在哪）—— 自检量「菜单不置顶」用 */
@@ -147,6 +194,15 @@ contextBridge.exposeInMainWorld('yachiyo', {
        *    ⇒ 以后**每加一条链，都要顺手在这儿看一眼**。
        */
       'speak:say',
+      /*
+       * ★ 「准备睡」的状态变了 —— 页面拿它当气泡的第二道闸（见 ui/bubble.js）。
+       * ⚠️⚠️ 2026-10-13 **又漏了一次**：上面那段注释刚写完「以后每加一条链，
+       *    都要顺手在这儿看一眼」，转头加 `sleep:changed` 就忘了登记。
+       *    症状一模一样 —— 主进程发的日志有了、页面状态死活是 false、
+       *    **没有任何报错**，白查了半小时。
+       *    ⇒ 现在这个数组**开头的注释就是教训本身**，别再犯第三次。
+       */
+      'sleep:changed',
       'win:stage',
       /*
        * ★ 每个姿态的倾斜角被改了（设置面板那 5 个滑块）。

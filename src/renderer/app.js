@@ -12,7 +12,7 @@
  */
 
 import { Rig, CANVAS_PX } from './rig/rig.js';
-import { initBubble, showBubble, hideBubble, streamBubble, settleBubble } from './ui/bubble.js';
+import { initBubble, showBubble, hideBubble, streamBubble, settleBubble, setSleeping } from './ui/bubble.js';
 import { initSound, play as playSound, applyVolume } from './ui/sound.js';
 import { applyFont } from './ui/font.js';
 // ⚠️ 菜单 / 设置面板 / 聊天窗**不在这个页面里了** —— 它们各自搬去了独立的小窗口
@@ -565,6 +565,17 @@ window.yachiyo.on('speak:say', (text, o) => {
   // ⚠️ `o.seconds` = 这条链自己的停留时长（自言语在用；没给就按全局的来）
   showBubble(text, { sticky: false, seconds: o && o.seconds });
 });
+
+/**
+ * ★ 主进程说「我要睡了 / 我醒了」—— 睡着之后气泡一律不冒。
+ *
+ * ⚠️ 为什么页面也要拦一道（主进程的 sayIt 不是已经挡了吗）：
+ *    主进程挡的是"她要不要开口"，**挡不住"已经发出来的事件"**。
+ *    而气泡不止 sayIt 一个来源（`bubble:*` 那条走 runChat 的流就绕开了它），
+ *    以后新加的链更容易忘。这条闸搁在气泡自己的出口上，**谁都绕不过去**。
+ *    真机探针实测：只加主进程那道时，直接重放 `speak:say` 照样冒泡。
+ */
+window.yachiyo.on('sleep:changed', (on) => setSleeping(!!on));
 
 /**
  * 「气泡现在忙不忙」—— 自言语那边要问（忙就让人家这一轮）。

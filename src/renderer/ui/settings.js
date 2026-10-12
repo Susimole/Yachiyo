@@ -9,6 +9,13 @@
 import { svg } from './icons.js';
 import { fontState } from './font.js';
 import { makeHost } from './host.js';
+/*
+ * 界面调试台（只有高级页最下面那颗按钮会用到）。
+ * ⚠️ design.js 反过来 import 本文件的 showPage —— 这是个**环**。
+ *    能成立是因为：两边都是函数声明 / 顶层导出，**没有模块级立即执行**，
+ *    ESM 的 live binding 到调用时才解引用。别往这两个文件里加顶层副作用。
+ */
+import * as design from './design.js';
 
 let api = null;       // { cfg, setCfg, reset, onChanged }
 let curPage = 'habit';
@@ -464,6 +471,14 @@ export const PAGES = [
       { title:'配置文件', rows:[
         { t:'custom', key:'cfgPath' },
         { t:'btn', label:'恢复默认', text:'全部恢复默认', act:(a) => a.reset() },
+      ]},
+      /*
+       * ⚠️ 这一组是**他 2026-10-13 要的**：「在高级选项最下面加一个小按钮，最好是不起眼」。
+       *    所以它是整个面板的**最后一行**，按钮走 `.btn.quiet`（灰的，没有强调色）。
+       *    它干什么用、怎么退出，见 ui/design.js 的文件头。
+       */
+      { title:'界面调试', rows:[
+        { t:'custom', key:'designEntry' },
       ]},
     ],
   },
@@ -1037,6 +1052,24 @@ function mountCfgPath(cell) {
   });
 }
 
+/**
+ * 界面调试台的入口 —— **他 2026-10-13 要的，而且要求「最好是不起眼」**。
+ *
+ * 所以这里故意只给一个灰扑扑的小字按钮，没有强调色、没有图标。
+ * 正常用面板的人扫一眼就过去了；要找它的人知道它在高级页最底下。
+ *
+ * 点开之后：面板上出现虚线轮廓 + 可拖的把手 + 可直接改的文字，
+ * 底部弹出一条参数栏。退出时全部销毁，面板一个像素都不变（见 design.js 文件头）。
+ */
+function mountDesignEntry(cell) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'btn quiet';
+  b.textContent = '界面调试台';
+  b.onclick = () => design.enable();
+  cell.appendChild(b);
+}
+
 /* ============================================================
    渲染
    ============================================================ */
@@ -1137,6 +1170,7 @@ export function showPage(k) {
   if (p.k === 'weather') { const w = main.querySelector('[data-custom="weatherTest"]'); if (w) mountWeatherTest(w); }
   if (p.k === 'adv') {
     const c = main.querySelector('[data-custom="cfgPath"]'); if (c) mountCfgPath(c);
+    const d = main.querySelector('[data-custom="designEntry"]'); if (d) mountDesignEntry(d);
     // ★ 「倾斜角」那 5 根滑块（在「画面」组里，也是高级页）—— 见 mountTiltPoses
     const tp = main.querySelector('[data-custom="tiltPoses"]'); if (tp) mountTiltPoses(tp);
   }

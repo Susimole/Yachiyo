@@ -145,7 +145,8 @@ html,body{
 .p-win button#pClose:hover{ background:#e5484d22; color:#e5484d; }
 
 .p-side{
-  width:158px; flex:none; padding:14px 10px;
+  /* ⚠️ 158px 是原值 —— 调试台（ui/design.js）调完会把这个变量写上来 */
+  width:var(--d-side-w, 158px); flex:none; padding:14px 10px;
   background:var(--well); border-right:1px solid var(--line);
   display:flex; flex-direction:column; gap:2px;
 }
@@ -175,12 +176,18 @@ html,body{
 .p-side .p-foot button:hover{ background:var(--hover); color:var(--fg); }
 
 .p-main{ flex:1; padding:20px 24px; overflow-y:auto; }
-.p-main h2{ margin:0 0 2px; font-size:19px; font-weight:700; }
-.p-main .desc{ color:var(--sub); font-size:12.5px; margin-bottom:16px; }
+/* ⚠️ 上面那条是兜底的 —— 这两条用变量，调试台调的就是它们。
+   分开写而不是直接改上面那条，是为了让「原文」和「可调项」一眼分得清。 */
+.p-main{ padding-left:var(--d-main-pad, 24px); padding-right:var(--d-main-pad, 24px); }
+/* 开调试台时给底部那条腾地方（`--d-main-pb` 由 .card.d-on 定义） */
+.p-main{ padding-bottom:var(--d-main-pb, 20px); }
+.p-main h2{ margin:0 0 2px; font-size:var(--d-h2-size, 19px); font-weight:700; }
+.p-main .desc{ color:var(--sub); font-size:var(--d-desc-size, 12.5px); margin-bottom:16px; }
 .page{ display:none; }
 .page.on{ display:block; }
 
-.group{ border:1px solid var(--line); border-radius:14px; padding:4px 14px; margin-bottom:14px; }
+.group{ border:1px solid var(--line); border-radius:14px; padding:4px 14px;
+        margin-bottom:var(--d-gap, 14px); }
 .group > .g-title{ font-size:12px; color:var(--sub); padding:11px 0 7px; letter-spacing:.4px; }
 
 .row{ display:flex; align-items:center; gap:14px; min-height:44px; padding:9px 0; border-top:1px solid var(--line); }
@@ -238,6 +245,13 @@ input[type=color]::-webkit-color-swatch{ border:0; border-radius:5px; }
 }
 .btn:hover{ background:var(--hover); }
 .btn.primary{ background:var(--accent); color:var(--accent-ink); border-color:transparent; font-weight:600; }
+/* 「不起眼」那类 —— 他明确说过界面调试台的入口不该扎眼。
+   没底、没框、灰字，鼠标放上去才稍微实一点。 */
+.btn.quiet{
+  background:none; border-color:transparent; color:var(--sub);
+  font-size:11.5px; padding:4px 8px;
+}
+.btn.quiet:hover{ background:var(--hover); color:var(--fg); }
 
 .kv{ font-size:12px; color:var(--sub); line-height:1.7; }
 

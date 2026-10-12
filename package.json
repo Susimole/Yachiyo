@@ -27,7 +27,7 @@
       "package.json",
       "!**/*.map",
       "!**/node_modules/**/*",
-      "!src/renderer/assets/*.ico"
+      "!src/renderer/assets/icon-旧-256.ico"
     ],
     "directories": {
       "output": "dist",

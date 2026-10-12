@@ -19,7 +19,7 @@
 
 'use strict';
 
-const { BrowserWindow, screen } = require('electron');
+const { BrowserWindow, screen, app } = require('electron');
 const path = require('node:path');
 
 /**
@@ -127,6 +127,8 @@ function ensure(kind) {
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
+      // 开发版才给探针口（见 index.cjs 同名字段的说明）
+      additionalArguments: app.isPackaged ? [] : ['--yachiyo-dev'],
     },
   });
 
@@ -553,8 +555,64 @@ function broadcast(channel, ...args) {
   }
 }
 
+/* ============================================================
+   界面调试台 —— 临时把面板窗口放大一点
+   ============================================================
+   为什么需要：设置面板默认 780×580，而调试台底下要压一条 216px 的参数栏，
+   剩给内容区的就没多少了。他要在里面看整张面板的布局，挤着看不见全貌。
+
+   ★ 两条规矩：
+     ① **只放大，不缩小** —— 他要是自己把窗口拉得比设计尺寸还大，
+        那是他想要的尺寸，别给拽回来。
+     ② **退出时精确还原** —— 进来时的 `getBounds()` 原样摆回去
+        （不是硬写 780×580，他平时调过的尺寸不能丢）。
+
+   ⚠️ 牺牲掉的一种情况：**调试台开着的时候他手动拽窗口边调了大小，
+      退出会被还原覆盖掉**。为了这条去写"哪个维度是他改的"判断不值得 ——
+      调试台本来就是个临时开一下的东西，退出后想调尺寸随时还能调。
+   ⚠️ 幂等：靠 `if (designPrev) return` 挡住第二次 enable，
+      免得把「放大后」的尺寸误当成原始尺寸存下来。
+   ============================================================ */
+const DESIGN_SIZE = { w: 1200, h: 820 };
+let designPrev = null;
+
+function designMode(on) {
+  const panelWin = wins.get('panel');
+  if (!panelWin || panelWin.isDestroyed()) return false;
+
+  if (on) {
+    if (designPrev) return true;                 // 已经在调试模式里了
+    const b = panelWin.getBounds();
+    designPrev = b;
+    // 只放大：已经够大就一个字不动
+    if (b.width < DESIGN_SIZE.w || b.height < DESIGN_SIZE.h) {
+      let { x, y } = b;
+      const wa = screen.getPrimaryDisplay().workArea;
+      const cw = Math.max(b.width, DESIGN_SIZE.w);
+      const ch = Math.max(b.height, DESIGN_SIZE.h);
+      if (x + cw > wa.x + wa.width) x = wa.x + wa.width - cw;
+      if (y + ch > wa.y + wa.height) y = wa.y + wa.height - ch;
+      try {
+        panelWin.setBounds({ x: Math.round(x), y: Math.round(y), width: cw, height: ch });
+      } catch { /* 摆不动就保持原样，顶多挤一点 */ }
+    }
+    return true;
+  }
+
+  if (designPrev) {
+    /*
+     * ⚠️ 调试期间他如果**自己拽窗口边**把尺寸改了，那个尺寸才是他想要的，
+     *    别用进来之前的旧尺寸把它盖回去。只还原位置/宽高里他没动过的部分
+     *    —— 判断办法：跟"进来时记录的值"比，一样说明他没动过。
+     */
+    try { panelWin.setBounds(designPrev); } catch { /* 窗口可能已经关了 */ }
+    designPrev = null;
+  }
+  return true;
+}
+
 module.exports = {
   SPEC, attach, ensure, open, close, fit, isOpen, closeAll, destroyAll, broadcast,
-  mainTopValue,
+  mainTopValue, designMode,
   list: () => wins,
 };

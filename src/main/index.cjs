@@ -171,6 +171,16 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,   // 窗口不可见时也别把计时器冻住
+      /*
+       * 开发版才挂探针口（`_probe` / `_sleep`）。
+       *
+       * ⚠️⚠️ 为什么非要**从主进程显式传**，而不是让 preload 自己判断：
+       *    preload 跑在沙箱里，那里 `require('electron')` **没有 `app`**
+       *    （写 `app.isPackaged` 会当场抛错，Electron 会把**整个 preload 静默丢掉**）；
+       *    而 `process.execPath` 在沙箱里也不是你以为的那个值（实测判不出来）。
+       *    主进程这边 `app.isPackaged` 是**可靠**的 —— 那就由它一句话告诉对面。
+       */
+      additionalArguments: app.isPackaged ? [] : ['--yachiyo-dev'],
     },
   });
 
@@ -321,6 +331,32 @@ ipcMain.on('ov:fit', (e, h) => {
 
 ipcMain.on('ov:close-kind', (_e, kind) => {
   if (typeof kind === 'string') overlay.close(kind);
+});
+
+/**
+ * 界面调试台：临时把面板窗口放大一点（底下要压一条参数栏）。
+ * 详见 overlay.cjs 的 designMode —— 只放大不缩小、退出精确还原。
+ */
+ipcMain.on('ov:design', (_e, on) => { overlay.designMode(!!on); });
+
+/**
+ * ★ **只给探针用**：把「准备睡」掰过去 / 回来。
+ *
+ * 为什么需要（真机实测卡在这儿）：真实进睡的条件是「键鼠停够 55 分钟」——
+ *   等不起；本机又没有可靠的办法伪造"用户活动"
+ *   （`SetThreadExecutionState` / `SendKeys` 实测都重置不了系统空闲计时器）。
+ *   要验证「睡着了到底还冒不冒气泡」这件事，只能有个直接拨开关的口子。
+ *
+ * ⚠️ 产品流程一次都不调它 —— 真实进出走心跳里的 `review.tick()`。
+ *    跟 `ov:probe-raise` 是同一类东西：**为了不改产品代码就能量到真实行为**。
+ */
+ipcMain.handle('probe:sleep', (_e, on) => {
+  // `on` 给 null 就是**纯查询**，不改状态（探针要分开问"设成功没"和"现在什么状态"）
+  if (on === null || on === undefined) return review.isSleeping();
+  review._setSleeping(!!on);
+  // 立刻把状态推给页面 —— 不然要等下一拍心跳（5 秒）才生效，探针得干等
+  overlay.broadcast('sleep:changed', review.isSleeping());
+  return review.isSleeping();
 });
 
 /**
@@ -713,10 +749,24 @@ ipcMain.handle('chat:send', (_e, text) => runChat(text, {
   delta: 'chat:delta', done: 'chat:done', fail: 'chat:error',
 }));
 
-/** 双击她那条路 —— 回答冒在头顶的气泡上，聊天窗一个字都不进 */
-ipcMain.handle('chat:send-quick', (_e, text) => runChat(text, {
-  delta: 'bubble:delta', done: 'bubble:done', fail: 'bubble:error',
-}));
+/**
+ * 双击她那条路 —— 回答冒在头顶的气泡上，聊天窗一个字都不进。
+ *
+ * ⚠️⚠️ 这条路**绕过了 `sayIt`**（它自己发 bubble:*，不走 speak:say），
+ *    所以「准备睡」那道闸管不到它，得在这儿单独挡一次
+ *    —— 他 2026-10-13 说的「睡着状态不会有任何气泡弹出」。
+ *    挡在入口而不是 runChat 里：runChat 是聊天窗共用的，
+ *    **他主动打开聊天窗打字时不该被挡**（那是显式交互，不是她"自己冒泡"）。
+ */
+ipcMain.handle('chat:send-quick', (_e, text) => {
+  if (review.isSleeping()) {
+    plog('[说] 「准备睡」挡下一次双击提问：' + String(text || '').slice(0, 40));
+    return { ok: false, error: '她睡了', sleeping: true };
+  }
+  return runChat(text, {
+    delta: 'bubble:delta', done: 'bubble:done', fail: 'bubble:error',
+  });
+});
 
 ipcMain.on('chat:abort', () => { busy?.abort(); busy = null; });
 
@@ -1044,6 +1094,23 @@ if (!app.requestSingleInstanceLock()) {
      */
     const sayIt = (text, o = {}) => {
       if (!text) return;
+      /*
+       * ⚠️⚠️ 「准备睡」之后**不许再开口**（他 2026-10-13 明确要求：
+       *    「桌宠在睡着状态时不会说话也不会有任何气泡弹出」）。
+       *
+       * 为什么闸设在这儿：`sayIt` 是**唯一**的出口 —— 自言语、识屏、晚安
+       * 全从这条走。以前只在 selftalk / peeker 各自的闸里挡过，
+       * 那是"哪条链自己想起来了才挡"，漏一条就漏一条。
+       * 搁在出口这儿，**以后新增任何链都自动被管住**。
+       *
+       * ★ 唯一放行的是**晚安**：那是"她最后留一句再走"，正是睡眠这条链
+       *   自己要的结果。判据是 autoexit 自己的状态，不是调用方随手传的标志——
+       *   用标志的话，以后谁想插话都能给自己开个后门，闸就形同虚设了。
+       */
+      if (review.isSleeping() && !byePending()) {
+        plog(`[说] 「准备睡」挡下一句（${o.kind || '主动'}）：${text}`);
+        return;
+      }
       if (win && !win.isDestroyed()) win.webContents.send('speak:say', String(text), o);
       plog(`[说] ${o.kind || ''} ${text}`);
     };
@@ -1065,6 +1132,14 @@ if (!app.requestSingleInstanceLock()) {
     const recordSaid = (text, kind) => {
       try { memory.addSpoken(kind || '主动', text); }
       catch (err) { plog('[说] 记「我说过什么」失败：' + err.message); }
+    };
+
+    /**
+     * 现在这句是不是「晚安」—— 由 autoexit 自己说了算（见上面 sayIt 里那段注释）。
+     * 拿不到就问不出来，**当作不是**（宁可少说一句晚安，也不能破了睡觉的闸）。
+     */
+    const byePending = () => {
+      try { return !!autoexit.isSayingGoodnight(); } catch { return false; }
     };
 
 
@@ -1126,7 +1201,25 @@ if (!app.requestSingleInstanceLock()) {
       }
     } catch (err) { plog('[说] 补记失败：' + err.message); }
 
-    heartbeat.on('review', () => review.tick(heartbeat.idleMinutes()));
+    /*
+     * ★ 回顾链 —— 顺便把「准备睡」的变化推给页面。
+     *
+     * 为什么在这儿推而不是让页面自己算：进睡判据是**系统空闲时间**
+     *   （`powerMonitor.getSystemIdleTime()`），那东西只有主进程拿得到，
+     *   页面自己数"多久没动"会被她走动、气泡刷新带偏（旧工程栽过）。
+     *
+     * ⚠️ 只在**变化时**推 —— 心跳 5 秒一拍，无脑推就是每 5 秒一条 IPC，
+     *    而且页面那边会反复 setSleeping，白忙。
+     */
+    let sleepPushed = null;
+    const pushSleep = () => {
+      const now = review.isSleeping();
+      if (now === sleepPushed) return;
+      sleepPushed = now;
+      overlay.broadcast('sleep:changed', now);
+      plog('[说] 「' + (now ? '准备睡' : '醒了') + '」→ 已通知页面');
+    };
+    heartbeat.on('review', () => { review.tick(heartbeat.idleMinutes()); pushSleep(); });
     heartbeat.on('selfTalk', (idleMin) => selftalk.tick(idleMin));
     heartbeat.on('autoExit', (idleMin) => autoexit.tick(idleMin));
     heartbeat.on('profile', (idleMin, now) => profiletool.tick(now || new Date()));

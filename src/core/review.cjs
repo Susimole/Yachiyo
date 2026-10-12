@@ -354,6 +354,16 @@ function tick(idleMin) {
 module.exports = {
   FILE, buildMaterial, buildPrompt, applyResult, run, tick, reviewedToday,
   isSleeping: () => sleepMode,
+  /**
+   * ★ **只给探针用**：直接把「准备睡」掰过去 / 掰回来。
+   *
+   * 为什么需要：真实的进睡条件是「键鼠停够 55 分钟」，端到端等不起，
+   *    而且本机 `SetThreadExecutionState` 那类"伪造用户活动"的办法实测无效
+   *    （旧工程试过，见交接文档）。要在真机上验「睡着了到底还没有气泡」，
+   *    就必须有个直接拨开关的口子。
+   * ⚠️ 产品流程里不调它 —— 真实进出走 `tick()` 和 `wake()`。
+   */
+  _setSleeping(v) { sleepMode = !!v; },
   isBusy: () => busy,
   lastError: () => lastError,
   /** 她回来了（主对话那边也可以叫一声） */
