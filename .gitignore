@@ -57,3 +57,6 @@ _probe-tilt-home/
 
 # 骨架参数的历次备份（rigparams.cjs 每次改之前会存一份）
 rig.json.bak*
+
+# 调试期 HUD 参考图（无代码引用，只留本地）
+_hud/
