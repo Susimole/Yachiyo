@@ -133,19 +133,91 @@ async function main() {
       bar: !!document.querySelector('.d-bar'),
       inputs: document.querySelectorAll('.d-bar input[data-vk]').length,
       btns: [...document.querySelectorAll('.d-bar .d-btn')].map(b => b.textContent.trim()),
+      cols: document.querySelectorAll('.d-bar-l .d-grp').length,
       marks: document.querySelectorAll('.d-mark').length,
       handles: document.querySelectorAll('.d-handle').length,
       editables: document.querySelectorAll('.d-editable').length,
+      // ★ 行文字也挂上可编辑了吗（47 行的标签 / 提示）
+      labelEditable: document.querySelectorAll('.d-editable.c-label').length,
+      hintEditable: document.querySelectorAll('.d-editable.c-hint').length,
+      gtitleEditable: document.querySelectorAll('.d-editable.c-gtitle').length,
+      // ★ 跨区搬分组的两套控件
+      grabs: document.querySelectorAll('.g-title.d-grab').length,
+      sels: document.querySelectorAll('.d-gsel').length,
       varSet: card.style.getPropertyValue('--d-main-pb') || getComputedStyle(card).getPropertyValue('--d-main-pb').trim(),
     };
   })()`);
   chk('面板进了调试态 .card.d-on', !!dom.onClass, dom.onClass);
   chk('底部参数栏建出来了', !!dom.bar);
-  chk('参数输入框数量对（7 条）', dom.inputs === 7, dom.inputs);
+  chk('参数输入框数量对（22 条）', dom.inputs === 22, dom.inputs);
+  chk('参数按类型分栏（4 栏）', dom.cols === 4, dom.cols);
   chk('参数栏三颗按钮', dom.btns.length === 3, dom.btns);
   chk('区域轮廓框画出来了', dom.marks > 0, dom.marks);
   chk('拖拽把手在（顶栏 + 左栏）', dom.handles === 2, dom.handles);
   chk('可编辑文字挂上了', dom.editables > 0, dom.editables);
+  chk('47 行的标签都可编辑', dom.labelEditable > 5, dom.labelEditable);
+  chk('行提示小字也可编辑', dom.hintEditable > 0, dom.hintEditable);
+  chk('分组标题可编辑', dom.gtitleEditable > 0, dom.gtitleEditable);
+  chk('每个分组都有拖拽把手', dom.grabs > 0, dom.grabs);
+  chk('每个分组都有下拉兜底', dom.sels > 0, dom.sels);
+
+  console.log('');
+  console.log('=== ③b 跨区搬分组 ===');
+  const moved = await P.ev(`(async () => {
+    // 先看清楚每个下拉对应哪个组（免得按第几个瞎猜）
+    const sels = [...document.querySelectorAll('.d-gsel')];
+    const info = sels.map((s) => ({
+      grp: (s.closest('.g-title') || {}).textContent || '',
+      opts: [...s.options].map(o => o.value),
+    }));
+    // 挑「说话」那个
+    const sel = sels.find(s => /说话/.test((s.closest('.g-title')||{}).textContent||''));
+    if (!sel) return { err: '没找到「说话」组的下拉', info };
+    sel.value = 'habit';
+    const fired = sel.dispatchEvent(new Event('change', { bubbles: true }));
+    const m = await import('./ui/design.js');
+    const st = await import('./ui/settings.js');
+    await new Promise(r => setTimeout(r, 300));
+    const ov = st.getGroupOverride();
+    return {
+      moved: true, fired,
+      after: m.snapshotNow()['分组移动'],
+      ovKeys: [...ov.keys()],
+      habitTitles: (ov.get('habit') || []).map(g => g.title),
+      deps: m.depsOk(),
+      toast: (document.querySelector(".d-toast")||{}).textContent || null,
+      advTitles: (ov.get('adv') || []).map(g => g.title),
+    };
+  })()`);
+  chk('下拉能选目标页', !!(moved && moved.moved), moved);
+  await sleep(1200);
+
+  // 切到「习惯」页看它到没到
+  const landed = await P.ev(`(() => {
+    const n = [...document.querySelectorAll('#navs .nav')].find(x => x.dataset.k === 'habit');
+    if (n) n.click();
+    return true;
+  })()`);
+  await sleep(1200);
+  const onHabit = await P.ev(`(() => {
+    document.querySelectorAll('.d-editable').forEach(e => { e.contentEditable = 'false'; });
+    return [...document.querySelectorAll('#pMain .group > .g-title')].map(t => t.textContent.replace(/^⠿/,'').trim());
+  })()`);
+  chk('搬过去的组出现在「习惯」页', Array.isArray(onHabit) && onHabit.some(t => /说话/.test(t)), onHabit && onHabit.slice(0, 4));
+  chk('（附）下拉跟着显示当前页', landed === true);
+
+  console.log('');
+  console.log('=== ③c 「全部还原」能把分组搬回去 ===');
+  await P.ev(`(() => { const b=[...document.querySelectorAll('.d-bar .d-btn')].find(x=>/全部还原/.test(x.textContent)); if(b) b.click(); })()`);
+  await sleep(1200);
+  await P.ev(`(() => { const n=[...document.querySelectorAll('#navs .nav')].find(x=>x.dataset.k==='habit'); if(n) n.click(); })()`);
+  await sleep(1000);
+  const afterReset = await P.ev(`(() => {
+    document.querySelectorAll('.d-editable').forEach(e => { e.contentEditable = 'false'; });
+    const t = [...document.querySelectorAll('#pMain .group > .g-title')].map(x => x.textContent.replace(/^⠿/,'').trim());
+    return { titles: t, hasShuo: t.some(x => /说话/.test(x)) };
+  })()`);
+  chk('还原后「说话」组不在「习惯」页了', afterReset && afterReset.hasShuo === false, afterReset && afterReset.titles);
 
   console.log('');
   console.log('=== ④ 改一个值，看有没有真的作用到样式 ===');
@@ -166,7 +238,7 @@ async function main() {
     return m.snapshotNow();
   })()`);
   chk('快照有「结构」段', !!(json && json.结构), json && Object.keys(json));
-  chk('结构段是 7 条', !!(json && json.结构 && Object.keys(json.结构).length === 7),
+  chk('结构段是 22 条', !!(json && json.结构 && Object.keys(json.结构).length === 22),
     json && json.结构 && Object.keys(json.结构).length);
   chk('左栏宽度记成了刚改的 190', !!(json && json.结构 && json.结构['side-w'] === 190),
     json && json.结构 && json.结构['side-w']);

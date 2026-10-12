@@ -557,3 +557,40 @@ html,body{
   font-size:11.5px; color:#2ea043; opacity:0; transition:opacity .2s; text-align:center;
 }
 .d-toast.on{ opacity:1; }
+
+
+/* ============================================================
+   调试台 · 跨区搬分组 + 可编辑文字（配合 ui/design.js）
+   ⚠️ 全部只在 .card.d-on 底下生效 —— 平时一条都匹配不到。
+   ============================================================ */
+
+/* ---- 可编辑文字：虚线框标出来 ---- */
+.d-editable{ outline:1px dashed rgba(10,126,164,.45); outline-offset:1px; border-radius:3px; cursor:text; }
+.d-editable:hover{ background:rgba(10,126,164,.07); }
+.d-editable:focus{ outline:1px solid var(--accent); background:rgba(10,126,164,.10); }
+.g-title .d-editable{ display:inline-block; }
+
+/* ---- 分组标题上的把手 + 下拉 ---- */
+.card.d-on .g-title{ display:flex; align-items:center; gap:8px; }
+.d-grab{ cursor:grab; -webkit-user-select:none; user-select:none; }
+.d-grab:active{ cursor:grabbing; }
+.d-gsel{
+  margin-left:auto; font:inherit; font-size:10.5px; padding:1px 4px;
+  background:var(--well); color:var(--fg);
+  border:1px solid var(--line); border-radius:6px; cursor:pointer;
+  -webkit-app-region:no-drag;
+}
+.d-gsel:focus{ outline:1px solid var(--accent); }
+
+/* ---- 拖拽中的高亮 ---- */
+.group.d-src{ opacity:.45; }
+.group.d-drop{ outline:2px solid var(--accent); outline-offset:-2px; border-radius:14px; }
+#navs .nav.d-over{ background:var(--accent); color:#fff; }
+#navs .nav.d-over svg{ color:#fff; }
+
+/* ---- 某页的组被搬光时的提示 ---- */
+.d-empty{ color:var(--sub); font-size:12px; padding:14px 2px; }
+/* 调试栏里的分组竖条 —— 22 个参数平铺没法看，按类型分栏 */
+.d-grp{ display:flex; flex-direction:column; gap:4px; padding-right:10px; border-right:1px solid var(--line); }
+.d-grp:last-child{ border-right:0; padding-right:0; }
+.d-grp-h{ font-size:10px; color:var(--accent); letter-spacing:.5px; margin-bottom:2px; }
