@@ -612,3 +612,10 @@ html,body{
   white-space:pre; overflow:auto; -webkit-user-select:text; user-select:text;
 }
 .d-export-f{ display:flex; gap:8px; justify-content:flex-end; }
+/* 调试栏里的存哪儿了小字 */
+.d-where{ font-size:10px; color:var(--sub); margin-top:2px; }
+.d-where-p{
+  font-size:9.5px; color:var(--sub); opacity:.75;
+  word-break:break-all; line-height:1.35;
+  font-family:Consolas,Menlo,monospace;
+}
