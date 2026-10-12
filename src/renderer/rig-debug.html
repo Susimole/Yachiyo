@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>骨架调试台</title>
+<style>
+  :root { color-scheme: dark; --bg:#14181c; --panel:#1a2026; --line:#2a323a; --ink:#cfe9f2; --dim:#8fa3b0; --hi:#0a7ea4; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font:12px/1.55 "Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif; }
+  body { display:grid; grid-template-columns: 1fr 420px; }
+
+  #stage { display:grid; place-items:center; overflow:hidden; position:relative;
+    background-image:
+      linear-gradient(45deg,#1c2228 25%,transparent 25%), linear-gradient(-45deg,#1c2228 25%,transparent 25%),
+      linear-gradient(45deg,transparent 75%,#1c2228 75%), linear-gradient(-45deg,transparent 75%,#1c2228 75%);
+    background-size:24px 24px; background-position:0 0,0 12px,12px -12px,-12px 0; }
+  #c { display:block; }
+
+  aside { border-left:1px solid var(--line); background:var(--panel); overflow:auto; padding:12px 14px 60px; }
+  h1 { font-size:13px; margin:0 0 10px; color:#7fd4f0; }
+  .bar { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+  button { font:inherit; padding:3px 9px; background:#222a32; color:var(--ink);
+    border:1px solid #333d47; border-radius:5px; cursor:pointer; }
+  button:hover { background:#2b353f; }
+  button.on { background:var(--hi); border-color:var(--hi); color:#fff; }
+  button.warn { background:#5a3a1a; border-color:#7a5020; }
+  select { font:inherit; background:#222a32; color:var(--ink); border:1px solid #333d47; border-radius:5px; padding:2px 6px; }
+
+  details { border:1px solid var(--line); border-radius:6px; margin-bottom:8px; }
+  summary { padding:5px 10px; cursor:pointer; color:#9fc6d8; font-weight:600; user-select:none; }
+  details[open] summary { border-bottom:1px solid var(--line); }
+  .body { padding:8px 10px; }
+
+  .row { display:grid; grid-template-columns: 92px 1fr 52px; align-items:center; gap:8px; margin:5px 0; }
+  .row label { color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .row input[type=range] { width:100%; }
+  .row .v { text-align:right; font-variant-numeric:tabular-nums; color:#7fd4f0; }
+  .row.changed label { color:#ffd98a; }
+
+  .prow { display:grid; grid-template-columns: 22px 22px 1fr 54px 54px; align-items:center; gap:4px; margin:3px 0; }
+  .prow button { padding:0; height:20px; line-height:1; font-size:11px; }
+  .prow .pname { color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .prow input { font-size:11px; padding:1px 4px; background:#0f1216; color:#9fe6b8;
+    border:1px solid var(--line); border-radius:4px; width:100%; text-align:right; }
+  .prow.dirty .pname { color:#ffd98a; }
+
+  #hud { font-variant-numeric:tabular-nums; white-space:pre; line-height:1.75; color:var(--dim); }
+  #hud b { color:#7fd4f0; }
+  #warn { color:#ffb37a; white-space:pre-wrap; margin-top:8px; }
+  #dump { width:100%; height:130px; margin-top:6px; background:#0f1216; color:#9fe6b8;
+    border:1px solid var(--line); border-radius:5px; font:11px/1.5 Consolas,monospace; padding:6px; display:none; }
+  .hint { color:var(--dim); margin:6px 0 0; }
+</style>
+</head>
+<body>
+  <div id="stage"><canvas id="c"></canvas></div>
+
+  <aside>
+    <h1>骨架调试台</h1>
+
+    <div class="bar">
+      <button id="btnAuto">自动跑</button>
+      <button id="btnReset" class="warn">复位参数</button>
+      <button id="btnDump">导出 JSON</button>
+    </div>
+
+    <div class="bar" id="modeBtns">
+      <button data-m="idle">歇着</button>
+      <button data-m="walk">步行</button>
+      <button data-m="run">跑动</button>
+      <button data-m="sit">坐下</button>
+      <button data-m="sleep">睡觉</button>
+    </div>
+
+    <div class="bar">
+      <span style="color:var(--dim);align-self:center">预设</span>
+      <select id="presetSel"></select>
+      <span style="color:var(--dim);align-self:center">· 改的是</span>
+      <select id="targetSel"></select>
+      <span style="color:var(--dim);align-self:center">这套</span>
+    </div>
+
+    <div class="bar">
+      <span style="color:var(--dim);align-self:center">套</span>
+      <button id="setSide">side</button>
+      <button id="setSit">sit</button>
+      <span style="color:var(--dim);align-self:center">网格N</span>
+      <input id="gridN" type="range" min="1" max="8" step="1" value="4" style="width:80px">
+      <span id="gridNV" style="color:#7fd4f0">4</span>
+    </div>
+
+    <div class="bar">
+      <span style="color:var(--dim);align-self:center">形变强度</span>
+      <input id="meshK" type="range" min="0" max="3" step="0.05" value="1" style="width:120px">
+      <span id="meshKV" style="color:#7fd4f0">1.00</span>
+      <span style="color:var(--dim)">0 = 全刚性</span>
+    </div>
+
+    <div class="bar">
+      <span style="color:var(--dim);align-self:center">头发甩系数</span>
+      <input id="hairK" type="range" min="0" max="12" step="0.5" value="4" style="width:120px">
+      <span id="hairKV" style="color:#7fd4f0">4.0</span>
+    </div>
+
+    <details open>
+      <summary>眼动跟随（只在「歇着」生效）</summary>
+      <div class="body">
+        <div class="row"><label title="eyeHead">头跟多少</label>
+          <input id="eyeHead" type="range" min="0" max="1" step="0.02" value="0.3"><span class="v" id="eyeHeadV">0.30</span></div>
+        <div class="row"><label title="eyePupil">瞳孔跟多少</label>
+          <input id="eyePupil" type="range" min="0" max="1.5" step="0.02" value="0.6"><span class="v" id="eyePupilV">0.60</span></div>
+        <div class="row"><label title="eyeMaxDeg">跟随范围(度)</label>
+          <input id="eyeMaxDeg" type="range" min="20" max="120" step="1" value="75"><span class="v" id="eyeMaxDegV">75</span></div>
+        <div class="row"><label title="activity">活跃度</label>
+          <input id="activity" type="range" min="10" max="300" step="5" value="100"><span class="v" id="activityV">100</span></div>
+        <p class="hint">鼠标移到左边那块画面里动一动就能看到。<b>只有「歇着」才跟。</b></p>
+      </div>
+    </details>
+
+    <div id="hud">加载中…</div>
+    <textarea id="dump" spellcheck="false"></textarea>
+    <p class="hint" id="warn"></p>
+
+    <details open>
+      <summary>部件（图层顺序 + 位置微调）</summary>
+      <div class="body">
+        <div class="prow" style="color:var(--dim);font-size:11px">
+          <span></span><span></span><span>件名</span><span style="text-align:right">dx</span><span style="text-align:right">dy</span>
+        </div>
+        <div id="partsBody"></div>
+        <p class="hint">↑↓ 调图层（越靠下越在前面）。dx/dy 是位置微调，单位跟 rig.json 一样（拆件单位）。<br>
+          改完点「导出 JSON」，我回填进 rig.json。</p>
+      </div>
+    </details>
+
+    <div id="groups"></div>
+  </aside>
+
+<script type="module">
+import { Rig, CANVAS_PX } from './rig/rig.js';
+
+const GROUPS = [
+  ['步态', ['stepMs','stride','lift','bob','lean','hairRot','headBob']],
+  ['关节轴心', ['jHandY','jHandX','jFootY','jFootX']],
+  ['弹性', ['springK','followK']],
+  ['左脚 foot_a', ['faAmp','faLift','faRot','faPhase','faOff']],
+  ['右脚 foot_b', ['fbAmp','fbLift','fbRot','fbPhase','fbOff']],
+  ['左手 hand_a', ['haAmp','haCenter','haPhase','haOff']],
+  ['右手 hand_b', ['hbAmp','hbCenter','hbPhase','hbOff']],
+  ['坐姿', ['sitFootDeg','sitFootMs','sitHeadDeg']],
+];
+
+// 滑块的取值范围 —— 规格没给，按实际能用的区间给
+const RANGE = {
+  stepMs:[200,2000,10], stride:[0,1.3,.01], lift:[0,40,.5], bob:[0,20,.5], lean:[-10,10,.5],
+  hairRot:[-20,20,.5], headBob:[0,10,.5],
+  jHandY:[-60,60,1], jHandX:[-60,60,1], jFootY:[-60,60,1], jFootX:[-60,60,1],
+  springK:[0,3,.05], followK:[0,2,.05],
+  faAmp:[0,2,.05], faLift:[0,200,5], faRot:[-40,40,1], faPhase:[-100,100,5], faOff:[-40,40,1],
+  fbAmp:[0,2,.05], fbLift:[0,200,5], fbRot:[-40,40,1], fbPhase:[-100,100,5], fbOff:[-40,40,1],
+  haAmp:[0,60,1], haCenter:[-60,60,1], haPhase:[-100,100,5], haOff:[-40,40,1],
+  hbAmp:[0,60,1], hbCenter:[-60,60,1], hbPhase:[-100,100,5], hbOff:[-40,40,1],
+  sitFootDeg:[0,40,1], sitFootMs:[200,6000,50], sitHeadDeg:[0,20,.5],
+};
+
+const canvas = document.getElementById('c');
+const hud = document.getElementById('hud');
+const warn = document.getElementById('warn');
+const dump = document.getElementById('dump');
+const groupsEl = document.getElementById('groups');
+const presetSel = document.getElementById('presetSel');
+const targetSel = document.getElementById('targetSel');
+const btnAuto = document.getElementById('btnAuto');
+const gridN = document.getElementById('gridN');
+
+const rig = new Rig(canvas, { onStateChange: (m) => markMode(m), log: () => {} });
+rig.resize(CANVAS_PX, CANVAS_PX);
+
+let auto = false;
+let forced = 'idle';
+let backup = null;          // 复位用
+
+window.addEventListener('error', (e) => { warn.textContent = '✕ ' + (e.message || e.error); });
+window.addEventListener('unhandledrejection', (e) => { warn.textContent = '✕ ' + ((e.reason && e.reason.message) || e.reason); });
+
+function markMode(m) {
+  document.querySelectorAll('#modeBtns button').forEach((b) => b.classList.toggle('on', b.dataset.m === m));
+}
+
+// ---------- 加载 ----------
+try {
+  const data = await (await fetch('./assets/rig/rig.json')).json();
+  await rig.load(data, './assets/rig');
+  backup = JSON.parse(JSON.stringify(data));
+
+  presetSel.innerHTML = Object.keys(data.presets).map((k) => `<option>${k}</option>`).join('');
+  targetSel.innerHTML = Object.keys(data.presets).map((k) => `<option>${k}</option>`).join('');
+  presetSel.value = 'idle';
+  targetSel.value = 'idle';
+
+  buildSliders();
+  applyMode('idle');
+  warn.textContent = `载入 ${Object.values(rig.sets).map((s) => `${s.name}(${s.count}件)`).join(' · ')}`;
+} catch (err) {
+  warn.textContent = '✕ ' + err.message + '\n（记得用 npm run serve 开服务器，别直接双击打开）';
+  throw err;
+}
+
+// ---------- 滑块 ----------
+function buildSliders() {
+  groupsEl.innerHTML = '';
+  for (const [title, keys] of GROUPS) {
+    const d = document.createElement('details');
+    d.open = title === '步态';
+    d.innerHTML = `<summary>${title}</summary><div class="body"></div>`;
+    const body = d.querySelector('.body');
+
+    for (const key of keys) {
+      const [mn, mx, st] = RANGE[key] || [0, 1, .01];
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.dataset.key = key;
+      row.innerHTML =
+        `<label title="${key}">${key}</label>` +
+        `<input type="range" min="${mn}" max="${mx}" step="${st}" data-key="${key}">` +
+        `<span class="v"></span>`;
+      body.appendChild(row);
+
+      const input = row.querySelector('input');
+      input.addEventListener('input', () => {
+        const t = targetSel.value;
+        rig.data.presets[t][key] = Number(input.value);
+        refreshRow(key);
+      });
+    }
+    groupsEl.appendChild(d);
+  }
+}
+
+/** 把某个键的当前值同步到滑块 */
+function refreshRow(key) {
+  const row = groupsEl.querySelector(`.row[data-key="${key}"]`);
+  if (!row) return;
+  const t = targetSel.value;
+  const cur = rig.data.presets[t][key];
+  const def = rig.data.defaults[key];
+  row.querySelector('input').value = cur;
+  row.querySelector('.v').textContent = Number(cur).toFixed(2);
+  row.classList.toggle('changed', Math.abs(cur - def) > 1e-6);
+}
+
+function refreshAll() {
+  for (const [, keys] of GROUPS) for (const k of keys) refreshRow(k);
+  buildParts();
+}
+
+// ---------- 部件面板：图层顺序 + dx/dy 微调 ----------
+function buildParts() {
+  const cur = rig.currentSet;
+  const body = document.getElementById('partsBody');
+  if (!cur || !body) return;
+
+  const raw = rig.data.sets[cur.name];
+  body.innerHTML = '';
+  cur.order.forEach((key, i) => {
+    const p = raw.parts[key];
+    if (!p) return;
+    const row = document.createElement('div');
+    row.className = 'prow' + ((p.dx || p.dy) ? ' dirty' : '');
+    row.dataset.key = key;
+    row.innerHTML =
+      `<button data-act="up" ${i === 0 ? 'disabled' : ''}>↑</button>` +
+      `<button data-act="down" ${i === cur.order.length - 1 ? 'disabled' : ''}>↓</button>` +
+      `<span class="pname" title="${key}">${key}</span>` +
+      `<input type="number" step="1" data-k="dx" value="${p.dx || 0}">` +
+      `<input type="number" step="1" data-k="dy" value="${p.dy || 0}">`;
+    body.appendChild(row);
+  });
+}
+
+document.getElementById('partsBody').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const cur = rig.currentSet;
+  const raw = rig.data.sets[cur.name];
+  const key = btn.closest('.prow').dataset.key;
+  const i = cur.order.indexOf(key);
+  const j = btn.dataset.act === 'up' ? i - 1 : i + 1;
+  if (j < 0 || j >= cur.order.length) return;
+
+  // order 是同一个数组引用，改它两边都生效
+  [cur.order[i], cur.order[j]] = [cur.order[j], cur.order[i]];
+  rig._resetMotion();
+  buildParts();
+});
+
+document.getElementById('partsBody').addEventListener('input', (e) => {
+  const inp = e.target.closest('input[data-k]');
+  if (!inp) return;
+  const cur = rig.currentSet;
+  const raw = rig.data.sets[cur.name];
+  const key = inp.closest('.prow').dataset.key;
+  const v = Number(inp.value) || 0;
+
+  raw.parts[key][inp.dataset.k] = v;
+  cur.parts[key][inp.dataset.k === 'dx' ? 'x' : 'y'] =
+    (raw.parts[key][inp.dataset.k === 'dx' ? 'x' : 'y'] + v) * 0.72;
+  inp.closest('.prow').classList.add('dirty');
+});
+
+/** 重算某个件的画布位置（改完 dx/dy 后调） */
+function reapplyPart(key) {
+  const cur = rig.currentSet;
+  const raw = rig.data.sets[cur.name].parts[key];
+  const p = cur.parts[key];
+  if (!raw || !p) return;
+  p.x = (raw.x + (raw.dx || 0)) * 0.72;
+  p.y = (raw.y + (raw.dy || 0)) * 0.72;
+}
+
+// ---------- 按钮 ----------
+document.querySelectorAll('#modeBtns button').forEach((b) => {
+  b.addEventListener('click', () => { auto = false; paintAuto(); applyMode(b.dataset.m); });
+});
+
+function applyMode(m) {
+  forced = m;
+  rig.locked = true;
+  rig.setMode(m);
+  presetSel.value = rig.presetName;
+  targetSel.value = rig.presetName;
+  markMode(m);
+  refreshAll();
+}
+
+function paintAuto() {
+  btnAuto.classList.toggle('on', auto);
+  btnAuto.textContent = auto ? '自动跑 ✓' : '自动跑';
+}
+btnAuto.addEventListener('click', () => {
+  auto = !auto;
+  rig.locked = !auto;
+  if (auto) rig.state.enter('idle', '手动切回自动');
+  paintAuto();
+});
+paintAuto();
+
+presetSel.addEventListener('change', () => { rig.presetName = presetSel.value; targetSel.value = presetSel.value; refreshAll(); });
+targetSel.addEventListener('change', refreshAll);
+gridN.addEventListener('input', () => {
+  document.getElementById('gridNV').textContent = gridN.value;
+  rig.gridN = Number(gridN.value);   // 横条数 = 这个 × 4
+});
+
+// 形变强度：0 = 全刚性（跟旧版一样），1 = 规格默认，>1 = 夸张效果，方便一眼看出形变在不在
+const meshKRange = document.getElementById('meshK');
+meshKRange.addEventListener('input', () => {
+  document.getElementById('meshKV').textContent = Number(meshKRange.value).toFixed(2);
+  rig.meshK = Number(meshKRange.value);
+});
+
+// 头发甩系数（规格写 0.85，量级不对，所以给成可调）
+const hairKRange = document.getElementById('hairK');
+hairKRange.addEventListener('input', () => {
+  document.getElementById('hairKV').textContent = Number(hairKRange.value).toFixed(1);
+  rig.hairK = Number(hairKRange.value);
+});
+
+// 眼动三个参数 + 活跃度 —— 这几个不在 animKeys 里，是全局的
+for (const [id, key, digits] of [['eyeHead', 'eyeHead', 2], ['eyePupil', 'eyePupil', 2], ['eyeMaxDeg', 'eyeMaxDeg', 0]]) {
+  const el = document.getElementById(id);
+  el.addEventListener('input', () => {
+    const v = Number(el.value);
+    document.getElementById(id + 'V').textContent = v.toFixed(digits);
+    rig.data.gaze = rig.data.gaze || {};
+    rig.data.gaze[key] = v;      // 引擎里 P() 会优先读这里
+  });
+}
+
+const actEl = document.getElementById('activity');
+actEl.addEventListener('input', () => {
+  const v = Number(actEl.value);
+  document.getElementById('activityV').textContent = v;
+  rig.state.activity = v;
+});
+
+// 鼠标动 → 喂给引擎（眼动跟随用）
+const stageEl = document.getElementById('stage');
+stageEl.addEventListener('mousemove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  rig.mouse.x = (e.clientX - r.left) * (CANVAS_PX / r.width);
+  rig.mouse.y = (e.clientY - r.top) * (CANVAS_PX / r.height);
+  rig.mouse.on = true;
+});
+stageEl.addEventListener('mouseleave', () => { rig.mouse.on = false; });
+
+document.getElementById('setSide').addEventListener('click', () => { rig.locked = true; rig.setName = 'side'; rig.sitting = false; rig._resetMotion(); });
+document.getElementById('setSit').addEventListener('click', () => { rig.locked = true; rig.setName = 'sit'; rig.sitting = true; rig._resetMotion(); });
+
+document.getElementById('btnReset').addEventListener('click', () => {
+  const t = targetSel.value;
+  rig.data.presets[t] = JSON.parse(JSON.stringify(backup.presets[t]));
+  refreshAll();
+  warn.textContent = `已把「${t}」这套恢复成初始值`;
+});
+
+document.getElementById('btnDump').addEventListener('click', () => {
+  // 只导出跟 defaults 不一样的值 —— 交回来我按这个回填 rig.json
+  const t = targetSel.value;
+  const diff = {};
+  for (const [k, v] of Object.entries(rig.data.presets[t])) {
+    if (Math.abs(v - rig.data.defaults[k]) > 1e-6) diff[k] = v;
+  }
+  const payload = {
+    set: t,
+    changed: diff,
+    full: rig.data.presets[t],
+    // 这几个是全局的，不跟状态走
+    gaze: rig.data.gaze || { eyeHead: 0.3, eyePupil: 0.6, eyeMaxDeg: 75 },
+    activity: rig.state.activity,
+    mesh: { meshK: rig.meshK, hairK: rig.hairK, gridN: rig.gridN },
+  };
+  dump.style.display = 'block';
+  dump.value = JSON.stringify(payload, null, 2);
+  dump.select();
+  warn.textContent = `「${t}」这套有 ${Object.keys(diff).length} 个值跟默认不同 —— 复制走发我就行`;
+});
+
+// ---------- 主循环 ----------
+let last = performance.now(), frames = 0, t0 = performance.now(), fps = 0;
+
+function tick(now) {
+  const dt = now - last; last = now;
+
+  if (auto) rig.state.mouseIdleSec = 40;
+  rig.step(dt);
+  rig.render();
+
+  frames++;
+  if (now - t0 >= 1000) {
+    fps = Math.round((frames * 1000) / (now - t0)); frames = 0; t0 = now;
+    const cur = rig.currentSet, st = rig.state;
+    hud.innerHTML =
+      `帧率 <b>${fps}</b>　状态 <b>${rig.mode}</b>${auto ? '(自动)' : '(锁定)'}\n` +
+      `套 <b>${rig.setName}</b> · ${cur ? cur.count : 0} 件　脚间距 ${cur ? cur.footSep.toFixed(1) : '-'}\n` +
+      `相位 Ph=${rig.ph.toFixed(2)} PhSit=${rig.phSit.toFixed(2)}\n` +
+      `身体 Y=${rig.bodyY.toFixed(2)} Rot=${rig.bodyRot.toFixed(2)}°\n` +
+      `脚A (${rig.foot.a.x.toFixed(1)}, ${rig.foot.a.y.toFixed(1)})　脚B (${rig.foot.b.x.toFixed(1)}, ${rig.foot.b.y.toFixed(1)})\n` +
+      `形变 meshK=${rig.meshK.toFixed(2)}　hairR=${(rig.hairR || 0).toFixed(2)}　legAvg=${(rig.legAvg || 0).toFixed(2)}\n` +
+      `眼动 ${rig.gaze.follow ? '跟随中' : (rig.mouse.on ? '没跟（超范围/非歇着）' : '鼠标不在')}　` +
+      `hx=${rig.gaze.hx.toFixed(2)} hy=${rig.gaze.hy.toFixed(2)} pupil=${rig.gaze.pupil.toFixed(2)}　` +
+      `夹角 ${rig.gaze.ang === null ? '—' : rig.gaze.ang.toFixed(0) + '°'}`;
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

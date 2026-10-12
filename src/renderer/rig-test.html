@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>骨架引擎 · 试跑</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; height: 100%;
+    background: #14181c;
+    color: #cfe9f2;
+    font: 13px/1.6 "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  body { display: grid; grid-template-columns: 1fr 320px; }
+
+  #stage {
+    display: grid; place-items: center;
+    /* 棋盘格背景：一眼看出哪些地方是透明的 */
+    background-image:
+      linear-gradient(45deg, #1c2228 25%, transparent 25%),
+      linear-gradient(-45deg, #1c2228 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #1c2228 75%),
+      linear-gradient(-45deg, transparent 75%, #1c2228 75%);
+    background-size: 24px 24px;
+    background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+  }
+  #c { display: block; }
+
+  aside {
+    border-left: 1px solid #2a323a;
+    padding: 14px 16px;
+    overflow: auto;
+  }
+  h1 { font-size: 14px; margin: 0 0 12px; color: #7fd4f0; font-weight: 600; }
+  h2 { font-size: 12px; margin: 18px 0 8px; color: #8fa3b0; font-weight: 600;
+       text-transform: uppercase; letter-spacing: .06em; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; }
+  button {
+    font: inherit; font-size: 12px; padding: 4px 10px;
+    background: #222a32; color: #cfe9f2;
+    border: 1px solid #333d47; border-radius: 6px; cursor: pointer;
+  }
+  button:hover { background: #2b353f; }
+  button.on { background: #0a7ea4; border-color: #0a7ea4; color: #fff; }
+  label { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  input[type=range] { flex: 1; }
+  #hud { font-variant-numeric: tabular-nums; white-space: pre; line-height: 1.8; }
+  #hud b { color: #7fd4f0; font-weight: 600; }
+  .note { color: #8fa3b0; font-size: 12px; margin-top: 10px; }
+  .warn { color: #ffd98a; }
+</style>
+</head>
+<body>
+  <div id="stage"><canvas id="c"></canvas></div>
+
+  <aside>
+    <h1>骨架引擎 · 试跑</h1>
+
+    <h2>状态</h2>
+    <div class="row" id="modes">
+      <button data-m="idle">歇着</button>
+      <button data-m="walk">步行</button>
+      <button data-m="run">跑动</button>
+      <button data-m="sit">坐下</button>
+      <button data-m="sleep">睡觉</button>
+    </div>
+    <label><input type="checkbox" id="auto" checked> 自动跑（状态机自己骰）</label>
+
+    <h2>实时数据</h2>
+    <div id="hud">加载中…</div>
+
+    <h2>活跃度</h2>
+    <label><input type="range" id="act" min="1" max="300" value="100"><span id="actV">100</span></label>
+    <div class="note">1 = 懒得动 · 100 = 标准 · 300 = 闲不住</div>
+
+    <div class="note warn" id="warn"></div>
+  </aside>
+
+<script type="module">
+import { Rig, CANVAS_PX } from './rig/rig.js';
+
+const canvas = document.getElementById('c');
+const hud = document.getElementById('hud');
+const warn = document.getElementById('warn');
+
+// 把 JS 错误直接怼到界面上 —— headless 截图时看不到 console，只有这样才知道出了什么事
+window.addEventListener('error', (e) => {
+  warn.style.color = '#ff8a8a';
+  warn.textContent = '✕ JS 错误: ' + (e.message || e.error) + '\n' + (e.filename || '') + ':' + (e.lineno || '');
+});
+window.addEventListener('unhandledrejection', (e) => {
+  warn.style.color = '#ff8a8a';
+  warn.textContent = '✕ Promise 错误: ' + ((e.reason && e.reason.message) || e.reason);
+});
+const autoBox = document.getElementById('auto');
+const actRange = document.getElementById('act');
+const actV = document.getElementById('actV');
+const modeBtns = [...document.querySelectorAll('#modes button')];
+
+const rig = new Rig(canvas, {
+  onStateChange: (m) => markMode(m),
+  log: (s) => console.log('[rig]', s),
+});
+rig.resize(CANVAS_PX, CANVAS_PX);
+
+let auto = true;
+let manualMode = 'idle';
+
+// URL 参数：?mode=walk 直接锁死在某个状态（开发时一个个看动作）
+// ⚠️ 这里只记下来 —— 真正应用必须等 rig.load() 之后。
+//    那之前 rig.sets 还是空的，setMode 里换套那句会静默跳过：不报错、也不换。
+const qs = new URLSearchParams(location.search);
+const forcedMode = qs.get('mode');
+const forcedMeshK = qs.get('meshK');   // 形变强度（0 = 全刚性）
+const forcedHairK = qs.get('hairK');   // 头发甩系数
+const qMouse = qs.get('mouse');        // 假鼠标位置 "x,y"（headless 没真鼠标，验眼动用）
+if (forcedMode) {
+  auto = false;
+  autoBox.checked = false;
+  manualMode = forcedMode;
+}
+
+function markMode(m) {
+  modeBtns.forEach((b) => b.classList.toggle('on', b.dataset.m === m));
+}
+
+modeBtns.forEach((b) => {
+  b.addEventListener('click', () => {
+    auto = false;
+    autoBox.checked = false;
+    manualMode = b.dataset.m;
+    rig.setMode(manualMode);
+    markMode(manualMode);
+  });
+});
+
+autoBox.addEventListener('change', () => {
+  auto = autoBox.checked;
+  if (auto) rig.state.enter('idle', '手动切回自动');
+});
+
+actRange.addEventListener('input', () => {
+  actV.textContent = actRange.value;
+  rig.state.activity = Number(actRange.value);
+});
+
+// ---------- 加载 ----------
+try {
+  const res = await fetch('./assets/rig/rig.json');
+  const data = await res.json();
+  await rig.load(data, './assets/rig');
+  warn.textContent = `载入 ${Object.keys(rig.sets).length} 套：` +
+    Object.values(rig.sets).map((s) => `${s.name}(${s.count}件)`).join(' · ') +
+    (forcedMode ? `　· 锁定 ${forcedMode}` : '');
+
+  if (forcedMeshK !== null) rig.meshK = Number(forcedMeshK);
+  if (forcedHairK !== null) rig.hairK = Number(forcedHairK);
+  if (qMouse) {
+    const [mx, my] = qMouse.split(',').map(Number);
+    setInterval(() => { rig.mouse.x = mx; rig.mouse.y = my; rig.mouse.on = true; }, 100);
+  }
+
+  // ★ 换套要等两套都建好之后才能做
+  if (forcedMode) {
+    rig.locked = true;
+    rig.setMode(forcedMode);
+    markMode(forcedMode);
+  } else {
+    markMode(rig.mode);
+  }
+} catch (err) {
+  warn.textContent = '✕ ' + err.message +
+    '\n\n如果是 CORS 报错 → 用 npm run serve 开本地服务器，别直接双击打开。';
+  throw err;
+}
+
+// 真机上：鼠标一动就喂给引擎（眼动跟随用）
+window.addEventListener('mousemove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  rig.mouse.x = (e.clientX - r.left) * (CANVAS_PX / r.width);
+  rig.mouse.y = (e.clientY - r.top) * (CANVAS_PX / r.height);
+  rig.mouse.on = true;
+});
+
+// ---------- 主循环 ----------
+let last = performance.now();
+let frames = 0, t0 = performance.now(), fps = 0;
+let booted = false;
+let minBodyY = 0, maxBodyY = 0, minFootAx = 0, maxFootAx = 0;
+
+function tick(now) {
+  const dt = now - last;
+  last = now;
+
+  if (auto) rig.state.mouseIdleSec = 40; // 试跑：假装鼠标静置，好让「跳」有机会被骰到
+  rig.step(dt);
+  rig.render();
+
+  // 记一波极值 —— 看动作到底有没有在动
+  minBodyY = Math.min(minBodyY, rig.bodyY); maxBodyY = Math.max(maxBodyY, rig.bodyY);
+  minFootAx = Math.min(minFootAx, rig.foot.a.x); maxFootAx = Math.max(maxFootAx, rig.foot.a.x);
+
+  frames++;
+  if (!booted) { booted = true; hud.textContent = '主循环已启动…'; }
+  if (now - t0 >= 1000) {
+    fps = Math.round((frames * 1000) / (now - t0));
+    frames = 0; t0 = now;
+
+    const cur = rig.currentSet;
+    const st = rig.state;
+    hud.innerHTML =
+      `帧率    <b>${fps}</b>\n` +
+      `状态    <b>${rig.mode}</b>${auto ? '（自动）' : '（手动）'}\n` +
+      `套      <b>${rig.setName}</b> · ${cur ? cur.count : 0} 件\n` +
+      `剩余    ${st.left.toFixed(1)}s　冷却 ${st.cool.toFixed(2)}s\n` +
+      `活跃度  A = <b>${st.A.toFixed(2)}</b>\n` +
+      `脚间距  ${rig.currentSet ? rig.currentSet.footSep.toFixed(1) : '-'} px\n` +
+      `相位    Ph=${rig.ph.toFixed(2)}　PhSit=${rig.phSit.toFixed(2)}\n` +
+      `身体    Y=${rig.bodyY.toFixed(2)}　Rot=${rig.bodyRot.toFixed(2)}°\n` +
+      `活动范围 bodyY ${minBodyY.toFixed(2)}~${maxBodyY.toFixed(2)}　脚x ${minFootAx.toFixed(1)}~${maxFootAx.toFixed(1)}`;
+
+    // 每秒往控制台打一行，主进程会转发到 stdout —— 用来验数学，比看图靠谱
+    console.log(`[tick] fps=${fps} mode=${rig.mode} set=${rig.setName}` +
+      ` mouse=(${rig.mouse.x},${rig.mouse.y},on=${rig.mouse.on})` +
+      ` gaze hx=${rig.gaze.hx.toFixed(2)} hy=${rig.gaze.hy.toFixed(2)} pupil=${rig.gaze.pupil.toFixed(2)}` +
+      ` ang=${rig.gaze.ang === null ? 'null' : rig.gaze.ang.toFixed(1)} follow=${rig.gaze.follow}` +
+      ` 姿态footA=(${rig.foot.a.x.toFixed(1)},${rig.foot.a.y.toFixed(1)})` +
+      ` 姿态footB=(${rig.foot.b.x.toFixed(1)},${rig.foot.b.y.toFixed(1)})` +
+      ` 实际tx=(${(rig.currentSet?.parts['foot_a']?.tx ?? 0).toFixed(1)},` +
+      `${(rig.currentSet?.parts['foot_b']?.tx ?? 0).toFixed(1)})` +
+      ` 实际deg=(${(rig.currentSet?.parts['foot_a']?.deg ?? 0).toFixed(2)},` +
+      `${(rig.currentSet?.parts['foot_b']?.deg ?? 0).toFixed(2)})` +
+      ` bodyY=${rig.bodyY.toFixed(2)} ph=${rig.ph.toFixed(2)}`);
+  }
+
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

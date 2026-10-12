@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>八千代 · 设置</title>
+<!--
+  ⚠️ 两个样式表的**顺序不能反**：
+     style.css 先（它带面板那一大套 .row / .group / .nav / .p-main 的规则），
+     overlay.css 后 —— 后者会把 --bg 覆盖成**不透明**的实色。
+     反过来的话 style.css 里的 `--bg:rgba(255,255,255,.86)` 赢，
+     面板又变回半透明的了（他明确要求过不透明）。
+-->
+<link rel="stylesheet" href="./style.css">
+<link rel="stylesheet" href="./overlay.css">
+</head>
+<body class="light">
+<div class="card">
+
+  <div class="bar">
+    <img class="ava" src="./assets/icon.ico" alt="">
+    <span class="title">八千代 · 设置</span>
+    <span class="spacer"></span>
+    <button id="pMin"   title="收起">─</button>
+    <button id="pClose" title="关闭">✕</button>
+  </div>
+
+  <div class="p-wrap">
+    <div class="p-side">
+      <div id="navs"></div>
+      <div class="p-foot">
+        <!-- ⚠️ 2026-10-12 他说的「菜单里左下角那个八」就是它（设置面板左侧栏底部）。
+             原来是个方底 + 一个「八」字，现在换成他给的 icon.ico ——
+             跟标题栏那颗、托盘、窗口图标是同一张。 -->
+        <!-- ⚠️ 这里原来还有个「暂停」按钮（#pPause）—— 它**从来没有绑过事件**，
+             是个死按钮。2026-10-12 顺手删了。 -->
+        <img class="m-ava ico" src="./assets/icon.ico" alt=""><b>八千代</b>
+      </div>
+    </div>
+    <!-- ⚠️ 滚动条由 overlay.css 那个「无底无钮、只有椭圆滑块」的规则接管 -->
+    <div class="p-main scroll" id="pMain"></div>
+  </div>
+</div>
+<script type="module" src="./ui/settings.js"></script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Yachiyo</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body class="light">
+
+  <!-- ============================================================
+       她 —— 这个窗口**只有她**。
+
+       ⚠️⚠️ 2026-10-12：菜单 / 设置面板 / 聊天窗**搬走了**，各自变成一个
+          独立的小窗口（menu.html / panel.html / chat.html）。
+
+          为什么非拆不可：它们原来都是这个窗口里的 DOM。而这个窗口盖着屏幕，
+          「让菜单能点」的唯一办法是把**整窗**的鼠标穿透关掉 ——
+          Electron 没有「窗口内局部穿透」这种东西。
+          于是打开一个 212×258 的右键菜单，**整块屏幕**都点不到后面的窗口了
+          （他报的两条「严重」之一）。拆开之后主窗口永远只管她自己。
+
+       她的位置由 #stage 的 left/top 决定（她是这个窗口里唯一会动的东西）。
+       ============================================================ -->
+  <div id="stage">
+    <canvas id="pet"></canvas>
+  </div>
+
+  <!-- 气泡（还留在这儿 —— 它要跟着她走，拆出去反而更麻烦） -->
+  <div id="bubble"><span id="bText"></span></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

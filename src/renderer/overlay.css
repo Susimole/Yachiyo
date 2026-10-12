@@ -1,0 +1,484 @@
+/* ============================================================
+   Yachiyo · 浮层样式（右键菜单 / 设置面板 / 聊天窗三页共用）
+
+   ⚠️ 这三个页面各自是一个**独立的小窗口**，不是主窗口里的 DOM。
+      为什么拆的、怎么摆的，见 src/main/overlay.cjs 的文件头。
+   ============================================================ */
+
+:root{
+  --accent:#0A7EA4;
+  --accent-ink:#fff;
+  --r-card:16px;
+  --fs:13.5px;
+  --bar-h:30px;                 /* 顶部可拖动的那一条 */
+  /*
+   * 界面字体。⚠️ 这个变量由 `ui/font.js` 在运行时改写（用户选了别的字体就换成那个）。
+   *    这里写的是**默认那套** —— 它是 JS 跑起来之前的值，不能省。
+   */
+  --font-ui:"Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+}
+body.dark-accent-pink{ --accent:#D96A8E; }
+body.dark-accent-gold{ --accent:#C99A2E; }
+
+body.light{
+  /*
+   * ⚠️ 2026-10-12：这里是**不透明**的，不是 rgba(255,255,255,.86)。
+   *    他报的：「菜单页有透明度，我需要设置为不透明」。
+   *    桌面宠物是个盖在别的东西上面的小窗，半透明会让底下的文字透上来，
+   *    看着脏。原来主窗口里的菜单用的是 .86 的白，是为了配合那层模糊；
+   *    拆成独立窗口之后没这个必要了，直接给实色。
+   */
+  --bg:#ffffff;
+  --bg-soft:#f6f7f9;
+  --fg:#1B1A1E;
+  --sub:#8A8794;
+  --line:rgba(0,0,0,.085);
+  --hover:rgba(0,0,0,.045);
+  --well:rgba(0,0,0,.035);
+  --shadow:0 12px 40px rgba(20,20,40,.18), 0 2px 8px rgba(20,20,40,.09);
+  --scroll:rgba(0,0,0,.22);
+  --scroll-hover:rgba(0,0,0,.36);
+}
+body.dark{
+  --bg:#1e2028;
+  --bg-soft:#242732;
+  /* ⚠️ 2026-10-12 他要的：夜间模式文字改成纯白（原来 #EDECF2 发灰） */
+  --fg:#FFFFFF;
+  --sub:#A8A5B4;
+  --line:rgba(255,255,255,.09);
+  --hover:rgba(255,255,255,.07);
+  --well:rgba(255,255,255,.05);
+  --shadow:0 14px 44px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
+  --scroll:rgba(255,255,255,.22);
+  --scroll-hover:rgba(255,255,255,.38);
+}
+
+*{ box-sizing:border-box; }
+html,body{
+  margin:0; height:100%; overflow:hidden;
+  background:transparent;               /* 窗口透明，圆角靠 .card */
+  font:var(--fs)/1.6 var(--font-ui);
+  color:var(--fg); user-select:none; cursor:default;
+}
+
+/* ---------- 整页就是一张卡片 ---------- */
+.card{
+  position:absolute; inset:0;
+  display:flex; flex-direction:column;
+  background:var(--bg);
+  border:1px solid var(--line);
+  border-radius:var(--r-card);
+  box-shadow:var(--shadow);
+  overflow:hidden;
+}
+
+/* ---------- 顶部可拖动条 ----------
+   ⚠️ 他的要求：「菜单栏应当像窗口一样可以拖动」。
+      用 `-webkit-app-region: drag` 交给系统处理 —— 自己写 mousedown 拖动
+      在无边框窗口上会有跟手延迟和抖动。
+   ⚠️ 这条上的按钮必须 `no-drag`，否则点不动（系统会把点击当成拖动起手）。 */
+.bar{
+  height:var(--bar-h); flex:none;
+  display:flex; align-items:center; gap:8px; padding:0 10px;
+  border-bottom:1px solid var(--line);
+  -webkit-app-region:drag;
+}
+
+/* ============================================================
+   右键菜单**不可拖动**（他 2026-10-12 要求的）
+   ============================================================
+   他的原话：「右键菜单就直接设置为不可拖动」。
+
+   ⚠️ 这条是**覆盖**上面 `.bar` 那条 `drag` 的 —— 所以顺序必须在它后面，
+      而且选择器要够具体。
+   ⚠️ 钩子用 `.m-list`：那是菜单**独有**的元素
+      （panel.html / chat.html 里 grep 是 0 个），不会连累设置面板和聊天窗。
+      想用 `body` 上的 class 做钩子是不行的 —— 那两个 class 已经被**主题**
+      （`light` / `dark`）占用了，覆盖掉主题就没了。
+   ⚠️ 菜单本来就不该能拖：它是「在光标处弹出来的一张卡片」，
+      位置由那次右键决定；能拖走反而会把「它到底属于哪儿」搞糊涂。
+      他要重摆就直接换个地方重新右键 —— 那更符合直觉。
+   ⚠️ 设置面板和聊天窗**保留可拖**（那两个是常驻窗口，会一直摆在那儿）。 */
+.card:has(.m-list) .bar{
+  -webkit-app-region:no-drag;
+}
+
+/*
+ * ⚠️ 2026-10-12 他的要求：「右键菜单左上角的那个『八』也用这个图标」。
+ *    原来那是个用强调色画的方块 + 一个「八」字（.m-ava）。
+ *    现在换成他给的 Yachiyo_icon.ico —— **三个浮层的标题栏都有**，
+ *    不然菜单有头像、设置面板没有，看着像两个软件。
+ *
+ *    ⚠️ 用 .ico 而不是 .png：Chromium 能显示 .ico，而这份 .ico 里带多档尺寸，
+ *       小尺寸下比缩一张大 png 清楚。文件只有 101 KB，不会拖慢加载。
+ *    ⚠️ `-webkit-app-region` 要写 `no-drag` 吗？不用 —— 它不可点、也不挡拖动，
+ *       留着 drag 反而让「从图标上拖窗口」也能用。
+ */
+.bar .ava{
+  width:18px; height:18px; flex:none; border-radius:5px;
+  object-fit:contain; -webkit-user-drag:none;
+}
+.bar .grip{
+  width:22px; height:3px; border-radius:2px; background:var(--line); flex:none;
+}
+.bar .title{ font-size:12px; color:var(--sub); letter-spacing:.4px; }
+.bar .spacer{ flex:1; }
+.bar button, .bar .no-drag{
+  -webkit-app-region:no-drag;
+  width:22px; height:22px; display:grid; place-items:center;
+  background:none; border:0; border-radius:7px; color:var(--sub);
+  cursor:pointer; font-size:13px; line-height:1; padding:0;
+}
+.bar button:hover{ background:var(--hover); color:var(--fg); }
+.bar button.danger:hover{ background:#e5484d22; color:#e5484d; }
+
+/* ---------- 内容区滚动 ---------- */
+.scroll{ flex:1; overflow-y:auto; overflow-x:hidden; }
+
+/* ---------- 滚动条 ----------
+   ⚠️ 他的要求：「滚动条不用加白底和上下钮，只需要保留椭圆滚动条就行」。
+      · 白底 = `::-webkit-scrollbar-track` 的默认背景 → 设成 transparent
+      · 上下钮 = `::-webkit-scrollbar-button` → display:none
+      · 椭圆 = thumb 用大圆角 + 透明边框往内收，看起来是根细椭圆棒 */
+.scroll::-webkit-scrollbar{ width:11px; height:11px; }
+.scroll::-webkit-scrollbar-track{ background:transparent; border:0; }
+.scroll::-webkit-scrollbar-button{ display:none; width:0; height:0; }
+.scroll::-webkit-scrollbar-corner{ background:transparent; }
+.scroll::-webkit-scrollbar-thumb{
+  background:var(--scroll);
+  border-radius:999px;                 /* 椭圆 */
+  border:3px solid transparent;        /* 往内收，滑块比槽细 */
+  background-clip:content-box;
+}
+.scroll::-webkit-scrollbar-thumb:hover{ background:var(--scroll-hover); background-clip:content-box; }
+
+/* ============================================================
+   右键菜单
+   ============================================================ */
+.m-head{ display:flex; align-items:center; gap:8px; padding:2px 2px 10px; }
+.m-ava{
+  width:32px; height:32px; border-radius:11px; flex:none; overflow:hidden;
+  background:var(--accent); color:var(--accent-ink);
+  display:grid; place-items:center; font-weight:700; font-size:15px;
+}
+.m-name{ font-weight:600; letter-spacing:.3px; }
+.m-head .m-tools{ margin-left:auto; display:flex; gap:2px; }
+.m-head .m-tools button{
+  width:26px; height:26px; display:grid; place-items:center; cursor:pointer;
+  background:none; border:0; border-radius:8px; color:var(--sub); font-size:14px; padding:0;
+}
+.m-head .m-tools button:hover{ background:var(--hover); color:var(--fg); }
+.m-head .m-tools button.danger:hover{ background:#e5484d22; color:#e5484d; }
+
+.m-list{ display:flex; flex-direction:column; gap:1px; }
+.m-item{
+  display:flex; align-items:center; gap:10px; padding:8px 9px;
+  border-radius:11px; cursor:pointer; transition:background .12s;
+}
+.m-item:hover{ background:var(--hover); }
+.m-item svg{ width:18px; height:18px; flex:none; color:var(--sub); transition:color .12s; }
+.m-item .txt{ flex:1; font-size:13px; }
+.m-item:hover .txt{ color:var(--fg); }
+.m-item.on svg{ color:var(--accent); }
+.m-item .arrow{ color:var(--sub); font-size:15px; line-height:1; opacity:.55; }
+.m-item:hover .arrow{ opacity:1; color:var(--accent); }
+
+/* 菜单里的内边距 */
+.pad{ padding:12px; }
+
+/* ============================================================
+   开关
+   ============================================================ */
+.sw{
+  width:34px; height:20px; border-radius:999px; flex:none;
+  background:var(--well); position:relative; transition:background .16s;
+}
+.sw::after{
+  content:''; position:absolute; top:2px; left:2px; width:16px; height:16px;
+  border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.25);
+  transition:transform .16s cubic-bezier(.3,.9,.3,1.1);
+}
+.sw.on{ background:var(--accent); }
+.sw.on::after{ transform:translateX(14px); }
+
+/* ============================================================
+   确认框（退出确认这种）
+   ============================================================ */
+.veil{
+  position:absolute; inset:0; z-index:50;
+  display:none; place-items:center;
+  background:rgba(18,18,24,.42);
+  backdrop-filter:blur(2px); -webkit-backdrop-filter:blur(2px);
+  /*
+   * ⚠️ 2026-10-12 他报的：「二次确认的虚化无圆角，很违和」。
+   *    原因是 .veil 是 .card 的**兄弟节点**（不是子节点），
+   *    .card 有 border-radius 而它没有 —— 于是卡片是圆的、上面盖的那层
+   *    半透明遮罩是**方**的，四个角会露出直角。
+   *    圆角跟卡片保持一致就对齐了。
+   */
+  border-radius:var(--r-card);
+  overflow:hidden;
+}
+.veil.open{ display:grid; }
+.ask{
+  width:calc(100% - 40px); max-width:280px;
+  background:var(--bg); border:1px solid var(--line);
+  border-radius:14px; box-shadow:var(--shadow); padding:16px;
+}
+.ask .q{ font-size:13.5px; margin-bottom:14px; line-height:1.5; }
+.ask .acts{ display:flex; gap:8px; justify-content:flex-end; }
+.ask button{
+  /*
+   * ⚠️ 他的要求：「确认退出按钮内嵌字是溢出的，可以改成『确定』即可」。
+   *    原来那个按钮上的字更长，而这个按钮是定宽 + `overflow:hidden` 的，
+   *    字被裁掉一截。现在文案压到两个字，同时把按钮改成**跟着文字撑开**
+   *    （min-width + padding），不再写死宽度 —— 双保险。
+   */
+  font:inherit; font-size:13px; cursor:pointer;
+  min-width:64px; padding:7px 16px; border-radius:10px;
+  border:1px solid var(--line); background:var(--bg-soft); color:var(--fg);
+  white-space:nowrap;
+}
+.ask button:hover{ background:var(--hover); }
+.ask button.main{ background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+.ask button.main:hover{ filter:brightness(1.06); }
+
+/* ============================================================
+   三个页面的**根布局** —— 填满整个窗口
+   ============================================================
+
+   ⚠️⚠️ 2026-10-12 他报的「所有菜单页的布局全乱了」，根因在这儿：
+
+      原来 #panel / #chat 都是**主窗口里的浮层**，它们的规则是
+          `position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+           opacity:0; pointer-events:none;`
+      靠外加一个 `.open` 类才显示出来。
+
+      搬成独立窗口之后，页面里**根本没有 #panel 这个元素了**
+      （panel.html 的根是 .card），于是那一整套定位和尺寸规则**一条都没命中** ——
+      里面的 .p-wrap / .p-side / .p-main 全成了没有尺寸约束的裸 div，塌成一坨。
+
+      所以在这儿把「填满整页」这件事补上。这三个页面以后**不靠 .open**，
+      窗口显隐是主进程的事（overlay.cjs）。
+
+   ⚠️⚠️ 还有一条特别容易漏的：**`min-height:0`**。
+      在 flex 布局里，`flex:1` 的子元素默认 `min-height:auto` ——
+      意思是「至少跟内容一样高」。所以只要内容比容器高，
+      它就会**把容器撑开**，`overflow-y:auto` **永远不触发**，滚动条压根不出现。
+      ⇒ 他报的「菜单页面无法滚动」就是这个。每个要滚的 flex 子项都得写 min-height:0。
+   ============================================================ */
+
+/* ---------- 设置面板：左边导航 + 右边内容 ---------- */
+.p-wrap{
+  flex:1; display:flex; min-height:0;      /* ★ 没有 min-height:0 右边就不滚 */
+  overflow:hidden;
+}
+.p-side{
+  /* style.css 里已经有 width/padding/背景，这里只补「别被压缩」 */
+  flex:none;
+}
+.p-main{
+  flex:1; min-height:0;                    /* ★ 同上 */
+  overflow-y:auto; overflow-x:hidden;
+}
+
+/* ---------- 聊天窗：列表 + 输入框 ---------- */
+.c-body{
+  flex:1; min-height:0;                    /* ★ 同上 */
+  overflow-y:auto; overflow-x:hidden;
+}
+.c-foot{ flex:none; }
+
+/* ---------- 右键菜单：内容区要能滚（菜单项以后可能变多） ---------- */
+.pad.scroll{ min-height:0; overflow-y:auto; }
+
+/* ============================================================
+   主题色选择 —— 预设色卡 + 调色盘
+   ============================================================ */
+.cwrap{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.swatches{ display:flex; gap:6px; }
+.swatch{
+  width:22px; height:22px; border-radius:7px; cursor:pointer;
+  border:1px solid rgba(0,0,0,.14);
+  transition:transform .12s, box-shadow .12s;
+}
+.swatch:hover{ transform:scale(1.12); }
+.swatch.on{
+  box-shadow:0 0 0 2px var(--bg), 0 0 0 4px currentColor;
+}
+/* 自定义调色盘：把原生那圈边框去掉，做成一颗跟色卡一样大的方块 */
+.cwrap input[type=color]{
+  width:26px; height:26px; padding:0; cursor:pointer;
+  border:1px solid var(--line); border-radius:8px;
+  background:none; -webkit-appearance:none; appearance:none;
+}
+.cwrap input[type=color]::-webkit-color-swatch-wrapper{ padding:2px; }
+.cwrap input[type=color]::-webkit-color-swatch{ border:0; border-radius:6px; }
+.cwrap .hex{
+  font:12px/1 ui-monospace,Consolas,monospace; color:var(--sub);
+  letter-spacing:.3px; user-select:text;
+}
+
+/* 数字输入框 —— 单价 / 上限那种要精确填的 */
+.cwrap .num-in{
+  width:92px; font:inherit; font-size:13px;
+  padding:5px 9px; border-radius:8px;
+  border:1px solid var(--line); background:var(--bg-soft); color:var(--fg);
+  text-align:right; font-variant-numeric:tabular-nums;
+}
+.cwrap .num-in:focus{
+  outline:2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset:0; border-color:var(--accent);
+}
+/* 去掉 Chromium 那对上下小箭头 —— 跟整体风格不搭，而且他要求过“不要上下钮” */
+.cwrap .num-in::-webkit-outer-spin-button,
+.cwrap .num-in::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
+
+/* ============================================================
+   「检测模型」列出来的模型名
+   ============================================================
+   一排小方块，点一下就填进上面「模型」那一行。
+   名字长短差很多（deepseek-chat vs 某个中转站的一长串），所以用 flex-wrap。 */
+/* 自定义行要塞两行东西时，把 body 从「单行 flex」改成竖排 —— 见 settings.js 的注释 */
+.row .body.stack{
+  flex-direction:column; align-items:stretch; gap:0;
+}
+.row .body.stack .mrow-top{
+  display:flex; align-items:center; gap:10px; min-width:0;
+}
+.row .body.stack .mrow-top .kv{ min-width:0; }
+
+.mlist{
+  display:flex; flex-wrap:wrap; gap:6px; align-items:center;
+  margin-top:8px;
+}
+.mlist:empty{ display:none; }        /* 还没检测过就一点位置都不占 */
+.mlist .mchip{
+  font:inherit; font-size:12.5px; cursor:pointer;
+  padding:4px 10px; border-radius:999px;
+  border:1px solid var(--line); background:var(--bg-soft); color:var(--fg);
+  white-space:nowrap; max-width:100%;
+  overflow:hidden; text-overflow:ellipsis;
+}
+.mlist .mchip:hover{ background:var(--hover); border-color:var(--accent); }
+.mlist .mchip.on{
+  background:var(--accent); border-color:var(--accent); color:var(--accent-ink);
+}
+.mlist .kv{ flex-basis:100%; }       /* 下面那两行提示各占一整行 */
+
+/* ============================================================
+   「倾斜角」那 5 根滑块（设置面板 → 高级 → 画面）
+   ============================================================
+   五个姿态各一根，竖着排。宽度要算着来：一行是
+   `名字(44) + 间隙(10) + 滑块(弹性) + 读数(52)`。 */
+.tilt-rows{ display:flex; flex-direction:column; gap:6px; }
+.tilt-row{ display:flex; align-items:center; gap:10px; min-width:0; }
+.tilt-name{
+  width:44px; flex:none; color:var(--fg); font-size:12.5px;
+}
+.tilt-row input[type=range]{ flex:1; min-width:80px; accent-color:var(--accent); }
+.tilt-val{
+  width:52px; flex:none; text-align:right; color:var(--sub);
+  font-size:12px; font-variant-numeric:tabular-nums;
+}
+
+/* 天气「试一下」查回来的那几行 —— 就是他提示词里会看到的内容 */
+.mlist .wtext{
+  flex-basis:100%; margin:4px 0 0; padding:10px 12px;
+  font:12.5px/1.7 ui-monospace,"Cascadia Mono",Consolas,monospace;
+  color:var(--fg); background:var(--well);
+  border:1px solid var(--line); border-radius:9px;
+  white-space:pre-wrap; word-break:break-word;
+}
+
+/* ============================================================
+   自绘下拉（替掉原生 <select>）
+   ============================================================
+   ⚠️ 原生 select 点开之后那张白底蓝高亮的菜单是 **Chromium 自己画的**，
+      跟面板的风格对不上，而且没有可用的选择器能碰它（见 settings.js 的长注释）。
+      所以闭合态和展开态都自己画，一律走面板同一套变量。
+
+   ⚠️ 浮层 `.sel-pop` 的定位父级是 `.card`（position:absolute; inset:0），
+      **不能挂进 #pMain** —— 那是滚动区，会被 overflow 裁掉。
+   位置由 JS 摆（下面放不下会自动往上翻）。 */
+.sel-trig{
+  font:inherit; font-size:12.5px; color:var(--fg); background:var(--well);
+  border:1px solid var(--line); border-radius:9px; padding:6px 10px;
+  cursor:pointer; display:flex; align-items:center; gap:8px;
+  min-width:0; max-width:100%; text-align:left;
+}
+.sel-trig:hover{ background:var(--hover); }
+.sel-trig.open{ border-color:var(--accent); }
+.sel-trig .sel-txt{
+  flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.sel-trig .sel-car{
+  flex:none; color:var(--sub); font-size:10px; line-height:1;
+  transition:transform .15s;
+}
+.sel-trig.open .sel-car{ transform:rotate(180deg); }
+
+.sel-pop{
+  position:absolute; z-index:40;
+  min-width:150px; max-width:calc(100% - 16px);
+  padding:5px; border-radius:12px;
+  background:var(--bg-solid); border:1px solid var(--line);
+  box-shadow:0 10px 28px rgba(0,0,0,.20);
+  /* 选项很多时（字体那种）自己滚，别冲出卡片 */
+  max-height:280px; overflow-y:auto; overflow-x:hidden;
+}
+.sel-item{
+  font:inherit; font-size:12.5px; color:var(--fg);
+  background:transparent; border:0; border-radius:8px;
+  width:100%; padding:7px 9px; cursor:pointer; text-align:left;
+  display:flex; align-items:center; gap:7px; min-width:0;
+}
+.sel-item:hover{ background:var(--hover); }
+.sel-item.on{ background:var(--accent); color:var(--accent-ink); font-weight:600; }
+.sel-item .sel-tick{
+  flex:none; width:11px; font-size:11px; text-align:center; opacity:.9;
+}
+.sel-item .sel-item-t{
+  flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+
+/* ============================================================
+   快速问一句（双击她弹出来的那条）
+   ============================================================
+   窗口就 380×56，整页就是一条 —— 没有标题栏、没有滚动区，
+   所以不复用 .bar / .pad 那一套，单写。 */
+.ask-card{
+  flex-direction:row; align-items:center; gap:8px;
+  padding:0 8px 0 10px; border-radius:14px;
+}
+.ask-ava{
+  width:22px; height:22px; flex:none; border-radius:6px;
+  object-fit:contain; -webkit-user-drag:none;
+}
+.ask-card input{
+  flex:1; min-width:0; height:34px;
+  font:inherit; font-size:13.5px; color:var(--fg);
+  background:none; border:0; outline:none; padding:0 2px;
+  -webkit-app-region:no-drag;
+}
+.ask-card input::placeholder{ color:var(--sub); }
+.ask-card input:disabled{ color:var(--sub); }
+.ask-card button{
+  flex:none; font:inherit; font-size:12.5px; cursor:pointer;
+  height:26px; padding:0 11px; border-radius:9px;
+  border:1px solid var(--line); background:var(--bg-soft); color:var(--fg);
+  white-space:nowrap;
+}
+.ask-card button:hover{ background:var(--hover); }
+.ask-card .ask-go{
+  background:var(--accent); border-color:var(--accent); color:var(--accent-ink);
+}
+.ask-card .ask-go:hover{ filter:brightness(1.06); background:var(--accent); }
+.ask-card .ask-x{
+  width:24px; padding:0; color:var(--sub); background:none; border-color:transparent;
+}
+.ask-card .ask-x:hover{ background:var(--hover); color:var(--fg); }
+
+/* 整个条都能拖着走 —— 它盖在她头顶，别挡住她 */
+.ask-card{ -webkit-app-region:drag; }
+.ask-card input, .ask-card button{ -webkit-app-region:no-drag; }
