@@ -262,7 +262,7 @@ export const PAGES = [
   },
   {
     k:'ai', icon:'chip', name:'AI 接入', title:'AI 接入',
-    desc:'她的大脑接在哪、花多少钱。默认预设 DeepSeek。',
+    desc:'AI接口、消耗查询以及部分参数设置栏，默认预设DeepSeek',
     groups:[
       { title:'连接', rows:[
         { t:'text', key:'apiBase', label:'接口地址', ph:'https://api.deepseek.com' },
@@ -293,7 +293,7 @@ export const PAGES = [
         { t:'custom', key:'aiDebug', label:'模型调试' },
       ]},
       { title:'回复', rows:[
-        { t:'sw', key:'thinking', label:'思考模式', hint:'回得慢但更稳' },
+        { t:'sw', key:'thinking', label:'思考模式', hint:'' },
         /*
          * ⚠️ 这一行是给「不用 DeepSeek」的人的：thinking / reasoning_effort
          *    是 DeepSeek 私有字段，往别家发有的服务会直接 400。
@@ -311,61 +311,43 @@ export const PAGES = [
            *    全面板的 hint 惯例是 24~33 字，这里跟着走。
            *    详细解释放「高级」页，别堆在这行上。
            */
-          hint:'别的服务可能不认这俩，本地模型选「谁都不发」' },
+          hint:'默认根据地址决定，本地模型选「谁都不发」' },
         // ⚠️ 思考模式开着时温度不生效 —— 旧工程干脆不发这个参数，
         //    所以这一行要标出来，不然他会以为滑块坏了
-        R('temperature','发散度', 0, 2, 0.05, v => v.toFixed(2), '思考模式开着时这项无效'),
+        R('temperature','发散度', 0, 2, 0.05, v => v.toFixed(2), '思考模式开着时这项无效；如要开启建议0.6~1.0'),
         { t:'sel', key:'thinkingDepth', label:'思考深度',
           opts:[['low','浅'],['medium','中'],['high','深']] },
-      ]},
-      { title:'联网', rows:[
-        /*
-         * ⚠️ 联网**只走 Anthropic 兼容端点**（`<接口地址>/anthropic/v1/messages`），
-         *    因为 OpenAI 那套的 `tools=[{type:'web_search'}]` 会被服务端**静默忽略** ——
-         *    返回 200、一次都没搜、模型拿旧知识编答案。他为此被骗过一整天。
-         *    详见 core/websearch.cjs 顶上那段。
-         */
-        { t:'sw', key:'webEnabled', label:'联网查资料',
-          hint:'他问新鲜事的时候她真去网上查一次' },
-        R('webMaxUses','最多搜几次', 1, 6, 1, v => v + ' 次', '单次让服务端搜几次'),
-        // ⚠️ 0 = 不限。拦太死会在真需要的时候查不到；20 次/天对日常够用
-        R('webMaxPerDay','每天上限', 0, 100, 5, v => v === 0 ? '不限' : v + ' 次'),
-        { t:'text', key:'webApiUrl', label:'联网地址',
-          ph:'留空＝按接口地址拼 /anthropic/v1/messages',
-          hint:'换服务商时可能要单独指一个' },
-        N('webTimeoutSeconds','超时', 1, '等多久算超时（秒）'),
-        N('webMaxOutputTokens','最长回复', 50, '查回来的答案最多多少 token'),
       ]},
       { title:'识屏', rows:[
         /*
          * ⚠️ **默认关**。这条会**把他的屏幕截图发出去** ——
          *    第一次该由他亲手打开，不该装完就偷偷发。他 2026-10-13 拍板的。
          */
-        { t:'sw', key:'screenEnabled', label:'看她屏幕',
-          hint:'她隔一阵偷看一眼你在干嘛，然后说一句' },
+        { t:'sw', key:'screenEnabled', label:'AI识屏',
+          hint:'' },
         /*
          * ★ **「时间可设」是他明确要求的那一条**。
          *   `screenEveryMinutes` 就是这个间隔。
          */
-        R('screenEveryMinutes','多久看一次', 1, 120, 1, v => v + ' 分钟',
-          '白天按这个来；深夜会乘倍率变安静'),
-        R('screenMaxPerDay','每天最多', 0, 100, 5, v => v === 0 ? '不限' : v + ' 次',
-          '0 = 不限'),
+        R('screenEveryMinutes','识屏间隔', 1, 120, 1, v => v + ' 分钟',
+          ''),
+        R('screenMaxPerDay','识屏上限', 0, 100, 5, v => v === 0 ? '不限' : v + ' 次',
+          '每日'),
         // ⚠️ 深夜那一档默认 ×3 —— 12 分钟变 36 分钟，别半夜老盯他
-        R('screenNightFactor','深夜倍率', 0.5, 10, 0.5, v => '×' + v,
-          '乘在上面的间隔上（默认 ×3）'),
-        { t:'sel', key:'screenCapture', label:'抓屏方式', opts:[
+        R('screenNightFactor','深夜降频', 0.5, 10, 0.5, v => '×' + v,
+          ''),
+        { t:'sel', key:'screenCapture', label:'识屏方式', opts:[
           ['auto','自动'],
           ['desktopCapturer','Electron'],
           ['gdi','GDI'],
-        ], hint:'自动＝先试 Electron 再退 GDI（两条都抓得到全屏游戏）' },
-        { t:'text', key:'screenModel', label:'看图用模型',
+        ], hint:'建议自动' },
+        { t:'text', key:'screenModel', label:'识图模型',
           ph:'留空＝跟主模型一样',
           hint:'⚠️ 要支持视觉的模型，不然她"看不见"还不报错' },
-        { t:'sw', key:'screenUseForeground', label:'带上窗口名',
-          hint:'不截图也知道你在用什么程序' },
-        { t:'sw', key:'screenAvoidRepeat', label:'画面没变就不说',
-          hint:'你一直盯着同一页时她不会反复念叨' },
+        { t:'sw', key:'screenUseForeground', label:'进程识别',
+          hint:'不截图她也能知道你在干什么' },
+        { t:'sw', key:'screenAvoidRepeat', label:'静置静默',
+          hint:'识屏检测画面无变动则不会说话' },
       ]},
       // ★ 「记忆与情绪」这块 2026-10-12 搬到「高级」页去了（他要求的）
       { title:'用量与成本', rows:[
@@ -469,6 +451,24 @@ export const PAGES = [
         { t:'text', key:'backupDir', label:'备份位置',
           hint:'相对路径搁在她家里；也可以填绝对路径挪到别的盘' },
         { t:'btn', label:'备份文件夹', text:'打开备份文件夹', act:(a) => a.revealBackup?.() },
+      ]},
+      { title:'联网', rows:[
+        /*
+         * ⚠️ 联网**只走 Anthropic 兼容端点**（`<接口地址>/anthropic/v1/messages`），
+         *    因为 OpenAI 那套的 `tools=[{type:'web_search'}]` 会被服务端**静默忽略** ——
+         *    返回 200、一次都没搜、模型拿旧知识编答案。他为此被骗过一整天。
+         *    详见 core/websearch.cjs 顶上那段。
+         */
+        { t:'sw', key:'webEnabled', label:'联网查资料',
+          hint:'他问新鲜事的时候她真去网上查一次' },
+        R('webMaxUses','最多搜几次', 1, 6, 1, v => v + ' 次', '单次让服务端搜几次'),
+        // ⚠️ 0 = 不限。拦太死会在真需要的时候查不到；20 次/天对日常够用
+        R('webMaxPerDay','每日上限', 0, 100, 5, v => v === 0 ? '不限' : v + ' 次'),
+        { t:'text', key:'webApiUrl', label:'联网地址',
+          ph:'留空＝按接口地址拼 /anthropic/v1/messages',
+          hint:'换服务商时可能要单独指一个' },
+        N('webTimeoutSeconds','超时', 1, '等多久算超时（秒）'),
+        N('webMaxOutputTokens','最长回复', 50, '查回来的答案最多多少 token'),
       ]},
       { title:'配置文件', rows:[
         { t:'custom', key:'cfgPath' },
