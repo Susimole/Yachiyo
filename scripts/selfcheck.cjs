@@ -544,7 +544,7 @@ async function main() {
     const sizeBefore = await cdp.evalJs(`return window.__yachiyo.size;`);
     await panel.evalJs(`
       const rows = [...document.querySelectorAll('#pMain .row')];
-      const row = rows.find(r => r.querySelector('.label')?.textContent.startsWith('桌宠大小'));
+      const row = rows.find(r => r.dataset.rk === 'petSize');
       const sl = row.querySelector('input[type=range]');
       sl.value = 200; sl.dispatchEvent(new Event('input')); sl.dispatchEvent(new Event('change'));
       return true;
@@ -559,7 +559,7 @@ async function main() {
     await cdp.screenshot('05-放大200.png');
     await panel.evalJs(`
       const rows = [...document.querySelectorAll('#pMain .row')];
-      const row = rows.find(r => r.querySelector('.label')?.textContent.startsWith('桌宠大小'));
+      const row = rows.find(r => r.dataset.rk === 'petSize');
       const sl = row.querySelector('input[type=range]');
       sl.value = 100; sl.dispatchEvent(new Event('input')); sl.dispatchEvent(new Event('change'));
       return true;
@@ -570,10 +570,11 @@ async function main() {
     const clicked = await panel.evalJs(`
       document.querySelector('#navs .nav[data-k="habit"]').click();
       const rows = [...document.querySelectorAll('#pMain .row')];
-      const row = rows.find(r => r.querySelector('.label')?.textContent.startsWith('深浅色'));
-      if (!row) return '没找到「深浅色」那一行';
-      const btn = [...row.querySelectorAll('.seg button')].find(b => b.textContent.trim() === '深色');
-      if (!btn) return '那一行里没有「深色」按钮';
+      // ⚠️ 按 **key** 找，不按文案 —— 他改个标签名就把自检搞崩过一次
+      const row = rows.find(r => r.dataset.rk === 'theme');
+      if (!row) return '没找到主题那一行（data-rk=theme）';
+      const btn = row.querySelector('.seg button[data-v="dark"]');
+      if (!btn) return '那一行里没有 dark 按钮';
       btn.click();
       return 'ok';
     `);
@@ -587,8 +588,8 @@ async function main() {
     await panel.screenshot('06-深色.png');
     await panel.evalJs(`
       const rows = [...document.querySelectorAll('#pMain .row')];
-      const row = rows.find(r => r.querySelector('.label')?.textContent.startsWith('深浅色'));
-      [...row.querySelectorAll('.seg button')].find(b => b.textContent.trim() === '浅色').click();
+      const row = rows.find(r => r.dataset.rk === 'theme');
+      row.querySelector('.seg button[data-v="light"]').click();
       return true;
     `);
     await sleep(400);
@@ -649,7 +650,7 @@ async function main() {
   await pnl.evalJs(`
     document.querySelector('#navs .nav[data-k="habit"]').click();
     const rows = [...document.querySelectorAll('#pMain .row')];
-    const row = rows.find(r => r.querySelector('.label')?.textContent.startsWith('总在最前'));
+    const row = rows.find(r => r.dataset.rk === 'alwaysOnTop');
     if (!row) throw new Error('习惯页里找不到「总在最前」那一行');
     row.querySelector('.sw').click();
     return true;
@@ -673,7 +674,7 @@ async function main() {
   await sleep(600);
   await pnl.evalJs(`
     const rows = [...document.querySelectorAll('#pMain .row')];
-    const row = rows.find(r => r.querySelector('.label')?.textContent.startsWith('总在最前'));
+    const row = rows.find(r => r.dataset.rk === 'alwaysOnTop');
     row.querySelector('.sw').click();
     return true;
   `);
@@ -683,7 +684,7 @@ async function main() {
   // ⚠️ 页面在 pnl 那边，状态机在主窗口这边 —— 点归点、量归量，别混着来
   const roam = await pnl.evalJs(`
     const btns = [...document.querySelectorAll('#pMain .row')]
-      .find(r => r.querySelector('.label')?.textContent.startsWith('走动节奏'))
+      .find(r => r.dataset.rk === 'roam')
       .querySelectorAll('.seg button');
     btns[0].click();
     return true;
@@ -692,7 +693,7 @@ async function main() {
   const roamActive = await cdp.evalJs(`return window.__yachiyo.rig.state.activity;`);
   const quiet = await pnl.evalJs(`
     const btns = [...document.querySelectorAll('#pMain .row')]
-      .find(r => r.querySelector('.label')?.textContent.startsWith('走动节奏'))
+      .find(r => r.dataset.rk === 'roam')
       .querySelectorAll('.seg button');
     btns[2].click();
     return true;
@@ -707,7 +708,7 @@ async function main() {
   void roam; void quiet;
   await pnl.evalJs(`
     const btns = [...document.querySelectorAll('#pMain .row')]
-      .find(r => r.querySelector('.label')?.textContent.startsWith('走动节奏'))
+      .find(r => r.dataset.rk === 'roam')
       .querySelectorAll('.seg button');
     btns[1].click();
     return true;
@@ -724,8 +725,8 @@ async function main() {
   `);
   await pnl.evalJs(`
     const rows = [...document.querySelectorAll('#pMain .row')];
-    for (const [name, val] of [['宽度','460'],['字号','18']]) {
-      const row = rows.find(r => r.querySelector('.label')?.textContent.startsWith(name));
+    for (const [key, val] of [['bubbleW','460'],['bubbleFontSize','18']]) {
+      const row = rows.find(r => r.dataset.rk === key);
       const sl = row.querySelector('input[type=range]');
       sl.value = val; sl.dispatchEvent(new Event('input')); sl.dispatchEvent(new Event('change'));
     }
@@ -745,8 +746,8 @@ async function main() {
   // 复位
   await pnl.evalJs(`
     const rows = [...document.querySelectorAll('#pMain .row')];
-    for (const [name, val] of [['宽度','320'],['字号','13.5']]) {
-      const row = rows.find(r => r.querySelector('.label')?.textContent.startsWith(name));
+    for (const [key, val] of [['bubbleW','320'],['bubbleFontSize','13.5']]) {
+      const row = rows.find(r => r.dataset.rk === key);
       const sl = row.querySelector('input[type=range]');
       sl.value = val; sl.dispatchEvent(new Event('input')); sl.dispatchEvent(new Event('change'));
     }

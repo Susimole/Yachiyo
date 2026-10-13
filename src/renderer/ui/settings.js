@@ -168,7 +168,7 @@ export const PRESET_COLORS = [
 export const PAGES = [
   {
     k:'habit', icon:'pulse', name:'习惯', title:'习惯',
-    desc:'她平时干什么、多久动一次、多大一只。',
+    desc:'常规设置栏',
     groups:[
       /*
        * ★★ 2026-10-12 他要求的挪动，**两件事要分开看**（我第一轮把第二件当成做完了，其实没有）：
@@ -181,17 +181,17 @@ export const PAGES = [
        *    「界面字体」跟着「通用」走，那个挂载是**全局现查**的，所以不受影响。
        */
       { title:'通用', rows:[
-        { t:'seg', key:'theme', label:'深浅色',
+        { t:'seg', key:'theme', label:'日/夜间模式',
           opts:[['light','浅色'],['dark','深色']] },
         { t:'colors', key:'accent', label:'主题色',
           hint:'预设是从她立绘上取的；右边那颗可以自己调' },
-        { t:'sw', key:'alwaysOnTop', label:'总在最前', hint:'别被别的窗口盖住' },
+        { t:'sw', key:'alwaysOnTop', label:'置顶', hint:'别被别的窗口盖住' },
         /*
          * ⚠️ 他 2026-10-12 说的：「音效大小可调滑块（**只在设置菜单中，不在右键菜单**）」。
          *    右键菜单是 244×250 的小窗，塞一根滑块进去太挤；那边只留「音效」开关。
          *    关掉音效时这一行没意义，但**不藏** —— 藏了会跳行，他调音量得先开音效。
          */
-        R('soundVolume','音效音量', 0, 100, 5, v => v + '%'),
+        R('soundVolume','互动音效音量', 0, 100, 5, v => v + '%'),
         /*
          * 字体。
          *   ⚠️ 候选是**动态**的 —— 扫 `%APPDATA%\Yachiyo\fonts\` 里有什么 ttf，
@@ -206,7 +206,7 @@ export const PAGES = [
         { t:'sw', key:'autostart', label:'开机自启', hint:'开机跟着系统起来' },
       ]},
       { title:'行为', rows:[
-        { t:'seg', key:'roam', label:'走动节奏', hint:'更爱走还是更爱待着',
+        { t:'seg', key:'roam', label:'行为习惯', hint:'更爱走还是更爱待着',
           opts:[['active','活跃'],['normal','默认'],['quiet','安静']] },
         R('moveSpeed','移动速度', 20, 300, 5, v => v + '%', '她走动时挪多快'),
         R('activity','活跃度', 20, 300, 5, v => v + '%', '越高换动作越勤'),
@@ -220,10 +220,10 @@ export const PAGES = [
   },
   {
     k:'bubble', icon:'chat', name:'对话框', title:'对话框',
-    desc:'她说话时那张气泡的位置、大小和长相。',
+    desc:'气泡参数调整栏',
     groups:[
       { title:'位置', rows:[
-        { t:'seg', key:'bubbleAnchor', label:'固定点', hint:'气泡挂在她哪个角',
+        { t:'seg', key:'bubbleAnchor', label:'气泡固定点', hint:'气泡挂在她哪个角',
           opts:[['tl','左上'],['tr','右上'],['bl','左下'],['br','右下']] },
         R('bubbleW','宽度', 120, 520, 2, v => v + 'px'),
         R('bubbleH','最大高度', 0, 600, 10, v => v ? v + 'px' : '自动'),
@@ -236,17 +236,17 @@ export const PAGES = [
           opts:[['wrap','换行'],['clip','截断']] },
       ]},
       { title:'时间', rows:[
-        R('bubbleSeconds','停留时长', 2, 60, 1, v => v + ' 秒'),
+        R('bubbleSeconds','滞留时长', 2, 60, 1, v => v + ' 秒'),
       ]},
     ],
   },
   {
     k:'weather', icon:'sun', name:'天气', title:'天气',
-    desc:'她看天气、念天气的方式。数据来自中国天气网。',
+    desc:'天气接口栏，数据来自中国天气网',
     groups:[
       { title:'城市', rows:[
         { t:'text', key:'city', label:'城市', ph:'湖南省郴州市',
-          hint:'要带省名；也可直接填 9 位 ID' },
+          hint:'要带省名，建议格式「省-市-区」' },
         { t:'seg', key:'tempUnit', label:'温度单位',
           opts:[['c','摄氏 °C'],['f','华氏 °F']] },
         // 填了城市就能当场验一次 —— 不然「填了没反应」又变成假开关
@@ -315,7 +315,7 @@ export const PAGES = [
         // ⚠️ 思考模式开着时温度不生效 —— 旧工程干脆不发这个参数，
         //    所以这一行要标出来，不然他会以为滑块坏了
         R('temperature','发散度', 0, 2, 0.05, v => v.toFixed(2), '思考模式开着时这项无效；如要开启建议0.6~1.0'),
-        { t:'sel', key:'thinkingDepth', label:'思考深度',
+        { t:'sel', key:'thinkingDepth', label:'思考强度',
           opts:[['low','浅'],['medium','中'],['high','深']] },
       ]},
       { title:'识屏', rows:[
@@ -367,14 +367,14 @@ export const PAGES = [
         N('priceOut','输出单价', 0.01, '人民币 / 每百万 token'),
         N('priceCacheHit','缓存命中价', 0.01, '人民币，命中的那部分便宜很多'),
         N('usdRate','汇率', 0.01, '一刀换多少人民币（切 $ 时才用）'),
-        { t:'sw', key:'spendAlert', label:'花超了提醒我' },
+        { t:'sw', key:'spendAlert', label:'每月超额提醒' },
         N('spendLimit','每月上限', 1, '到了这个数提醒你'),
       ]},
     ],
   },
   {
     k:'adv', icon:'gear', name:'高级', title:'高级',
-    desc:'调试用的，一般不用动。',
+    desc:'调试用的，没事别动',
     groups:[
       { title:'性能', rows:[
         R('fpsLimit','帧率上限', 0, 144, 5, v => v ? v + ' fps' : '跟随屏幕'),
@@ -384,7 +384,7 @@ export const PAGES = [
        *   搬的理由：它们都是**调试/微调**向的东西，平时不该占「习惯」的位置。
        */
       { title:'说话', rows:[
-        { t:'sw', key:'typewriter', label:'打字机效果', hint:'一个字一个字蹦出来' },
+        { t:'sw', key:'typewriter', label:'逐字输出', hint:'' },
         /*
          * ⚠️ 这里原来有一行「主动开口（talkChance）」—— **2026-10-13 删了**。
          *    他 2026-10-08 第 34 轮砍到点提醒的时候就定了：那个"随口提一句"
@@ -393,14 +393,14 @@ export const PAGES = [
          *    2026-10-13 问他要恢复还是删，他选**删**。
          *    ⇒ 别再加回来；要加就等识屏接上，走「心跳自选」那条路。
          */
-        { t:'sw', key:'typo', label:'偶尔打错字', hint:'像真人那样，打完自己改（只改气泡上显示的字）' },
-        { t:'range', key:'typoRate', label:'错字频率', min:1, max:30, step:1,
+        { t:'sw', key:'typo', label:'偶尔错字', hint:'' },
+        { t:'range', key:'typoRate', label:'错字概率', min:1, max:30, step:1,
           fmt:v => v + '%' },
       ]},
       { title:'画面', rows:[
         R('gridN','网格精度', 2, 12, 1, v => v + ' 格', '越高形变越顺，越吃性能'),
         R('meshK','形变强度', 0, 4, 0.05, v => v.toFixed(2)),
-        R('hairK','头发甩动', 0, 6, 0.1, v => v.toFixed(1)),
+        R('hairK','头发甩动强度', 0, 6, 0.1, v => v.toFixed(1)),
         /*
          * 整体倾斜角 —— 他 2026-10-12 要的（原来只在调试台里有）。
          * ⚠️ 它是**偏移量**：叠在每个姿态自己的基础值上
@@ -418,13 +418,13 @@ export const PAGES = [
          * ⚠️ 所以用 `custom` 行 + 在 showPage 里挂载，不能用普通的 `R(...)` ——
          *    普通的 R 走的是 `ctx.set(key, val)` → 写 config。
          */
-        { t:'custom', key:'tiltPoses', label:'倾斜角',
+        { t:'custom', key:'tiltPoses', label:'姿态倾斜角',
           hint:'每个姿态各自的（正值往后倒）' },
         { t:'sel', key:'breathStyle', label:'呼吸', opts:[
           ['squash','上下 Q 弹（脚不动）'],
           ['shift','整体上下平移'],
         ]},
-        { t:'sel', key:'smoothQuality', label:'缩小画质', opts:[
+        { t:'sel', key:'smoothQuality', label:'缩小方案', opts:[
           ['high','清晰（推荐）'],
           ['low','快，但小尺寸会出锯齿'],
         ]},
@@ -441,15 +441,15 @@ export const PAGES = [
       { title:'日志与备份', rows:[
         // ⚠️ `logLevel` **不是**待接 —— `core/log.cjs` 一直在读它。
         //    它原来挂着 `todo:true` 是标错了（那会儿还没接日志）。2026-10-12 摘掉。
-        { t:'sel', key:'logLevel', label:'日志级别',
+        { t:'sel', key:'logLevel', label:'日志类型',
           opts:[['error','只记错误'],['info','常规'],['debug','全部']] },
         // ★ 备份（2026-10-12 落地）：聊天记录/日志每天、记忆每周
-        { t:'sw', key:'backupDaily', label:'每日备份',
-          hint:'聊天记录和日志：每天一次，按年月归档' },
-        { t:'sw', key:'backupWeeklyMemory', label:'每周备份记忆',
-          hint:'人格+习惯+心事+状态：每周打包一份' },
+        { t:'sw', key:'backupDaily', label:'记录/日志备份',
+          hint:'' },
+        { t:'sw', key:'backupWeeklyMemory', label:'记忆每周备份',
+          hint:'' },
         { t:'text', key:'backupDir', label:'备份位置',
-          hint:'相对路径搁在她家里；也可以填绝对路径挪到别的盘' },
+          hint:'默认相对路径；也可以填绝对路径挪到别的盘' },
         { t:'btn', label:'备份文件夹', text:'打开备份文件夹', act:(a) => a.revealBackup?.() },
       ]},
       { title:'联网', rows:[
@@ -459,16 +459,16 @@ export const PAGES = [
          *    返回 200、一次都没搜、模型拿旧知识编答案。他为此被骗过一整天。
          *    详见 core/websearch.cjs 顶上那段。
          */
-        { t:'sw', key:'webEnabled', label:'联网查资料',
-          hint:'他问新鲜事的时候她真去网上查一次' },
-        R('webMaxUses','最多搜几次', 1, 6, 1, v => v + ' 次', '单次让服务端搜几次'),
+        { t:'sw', key:'webEnabled', label:'AI联网',
+          hint:'' },
+        R('webMaxUses','单次搜索上限', 1, 6, 1, v => v + ' 次', ''),
         // ⚠️ 0 = 不限。拦太死会在真需要的时候查不到；20 次/天对日常够用
-        R('webMaxPerDay','每日上限', 0, 100, 5, v => v === 0 ? '不限' : v + ' 次'),
+        R('webMaxPerDay','每日联网上限', 0, 100, 5, v => v === 0 ? '不限' : v + ' 次'),
         { t:'text', key:'webApiUrl', label:'联网地址',
           ph:'留空＝按接口地址拼 /anthropic/v1/messages',
-          hint:'换服务商时可能要单独指一个' },
-        N('webTimeoutSeconds','超时', 1, '等多久算超时（秒）'),
-        N('webMaxOutputTokens','最长回复', 50, '查回来的答案最多多少 token'),
+          hint:'无联网功能的模型需配置' },
+        N('webTimeoutSeconds','超时', 1, ''),
+        N('webMaxOutputTokens','最大消耗', 50, '查回来的答案最多增加多少 token'),
       ]},
       { title:'配置文件', rows:[
         { t:'custom', key:'cfgPath' },
@@ -567,6 +567,15 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;'
 function rowEl(row, ctx) {
   const d = document.createElement('div');
   d.className = 'row';
+  /*
+   * ★ 把配置键挂在行上 —— **给自检/探针用的稳定钩子**。
+   *
+   * ⚠️⚠️ 2026-10-13 栽的：自检原来是靠**文案**找那一行
+   *    （`label.textContent.startsWith('深浅色')`）。他把那行的标签改成
+   *    「日/夜间模式」之后，自检当场崩了 —— 改成按 `data-rk` 找，文案再改也不怕。
+   *    （同理 `seg` 每个按钮也挂了 `data-v`。）
+   */
+  if (row.key) d.dataset.rk = row.key;
 
   if (row.t === 'custom') {
     /*
@@ -605,6 +614,7 @@ function rowEl(row, ctx) {
       for (const [val, txt] of row.opts) {
         const b = document.createElement('button');
         b.textContent = txt;
+        b.dataset.v = String(val);      // ★ 给自检用（文案改了也找得到）
         if (String(v) === String(val)) b.classList.add('on');
         b.onclick = () => {
           seg.querySelectorAll('button').forEach(x => x.classList.remove('on'));
