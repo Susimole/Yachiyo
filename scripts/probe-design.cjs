@@ -454,6 +454,20 @@ async function main() {
 
   console.log('');
   console.log('=== ⑤ 导出 JSON —— 验数据结构，不只验按钮 ===');
+  /*
+   * ⚠️ 导出现在是"**只导他改过的**"（从 `state` 出，不是扫当前页 DOM）——
+   *    所以**得先改一处文字**，导出里才有东西。
+   *    这也正是他 2026-10-13 报的那个 bug 的修法：以前只扫当前页，
+   *    他改了 6 个页面，导出出来只有 AI 那一页。
+   */
+  await P.ev(`(() => {
+    const el = document.querySelector('#pMain .d-editable.c-label');
+    if (el) {
+      el.textContent = '【导出用·改过的一行】';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  })()`);
+  await sleep(900);   // 等防抖落盘
   const json = await P.ev(`(async () => {
     const m = await import('./ui/design.js');
     return m.snapshotNow();
@@ -475,14 +489,17 @@ async function main() {
    * 正确判据：这一页是 `adv`，那组键**只能**是 `adv#N/...`；
    *    冒出 `habit#` / `weather#` 才是真串了。
    */
+  /*
+   * ★★ 2026-10-13 行为改了：导出**只包含他改过的**（从 state 出）。
+   *    ⚠️ 断言别按"导出全部"写 —— 那样他改完 6 个页面，
+   *       导出的却只有当前那一页（这正是他报的那个 bug），
+   *       而且会塞进一大堆没动过的默认值，文件又长又没用。
+   */
   const crossPage = tk.filter(k => /^[a-z]+#\d+\//.test(k) && !k.startsWith('adv#'));
   chk('导出没有串进别的页的文案', crossPage.length === 0, crossPage);
-  // 分组标题的键现在长这样：`adv#2/title`（组 id + / + base）
-  const gkeys = tk.filter(k => /^[a-z]+#\d+\/title$/.test(k));
-  chk('分组标题键不重复', new Set(gkeys).size === gkeys.length && gkeys.length > 0, gkeys.length + ' 个');
-  chk('面板级文字没丢', tk.includes('panel/title') && tk.includes('panel/brand'), tk.filter(k=>/^panel/.test(k)));
-  chk('文字段抓到顶栏标题', !!(json && json.文字 && json.文字['panel/title']),
-    json && json.文字 && json.文字['panel/title']);
+  chk('★ 导出里有刚改过的那条', tk.includes('adv#0/r0.label'), tk);
+  chk('★ 导出只含改过的（没动的不塞进来）', tk.length === 1, tk.length + ' 条');
+  chk('键名不重复', new Set(tk).size === tk.length, tk.length + ' 个');
 
   // ★ 点了「导出 JSON」应该**弹出一个能看见内容的框**（他上一轮报「没找到 JSON 在哪」）
   await P.ev(`(() => { const b=[...document.querySelectorAll('.d-bar .d-btn')].find(x=>/导出/.test(x.textContent)); if(b) b.click(); })()`);

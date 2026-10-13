@@ -974,27 +974,33 @@ function snapshot() {
   for (const p of NUM_PARAMS) out.结构[p.k.replace(/^--d-/, '')] = getVar(p.k, p.def);
 
   /*
-   * 文字 —— ★★ **现扫 DOM，不查内部记账**。
+   * ★★ 文字 —— 从 **`state`** 出，**不是扫当前页的 DOM**。
    *
-   * ⚠️⚠️ 为什么不用 `textEls` 那个 Map（2026-10-13 的教训）：
-   *   我用"往 Map 里登记"的方式维护状态，结果切页之后旧页的元素没清干净、
-   *    导出的 JSON 里同一个 key 有两份打架的值，还混着**别的页**的文案。
-   *    改成"重画时 clear + 重挂"之后更糟：顶栏标题那几处（不随页重建）
-   *    被当成旧元素删掉，**整条 `panel.title` 从导出里消失了**。
-   *    ⇒ 记账就会记错。**DOM 才是真相**：谁带着 `data-dkey` 就导谁。
-   *      这样切过多少页都不会串，也不会漏。
+   * ⚠️⚠️ 2026-10-13 他报的：「设置菜单中的文字怎么都没改」「你的 json 文件只有那一页的改动」。
+   *    根因就在这儿 —— 原来是扫 `$$('.d-editable[data-dkey]')`，
+   *    而 **只有当前那一页的元素在 DOM 里**：他改了 6 个页面，
+   *    导出出来只有他站在的那一页（AI 接入）那几条。
+   *
+   *    更糟的是我照着那份"只有一页"的导出去改源码，还把 design.json 当成
+   *    "过期覆盖"删了 —— 差点把另外几页的改动一起弄丢（幸亏备份里有）。
+   *
+   *    ⇒ `state.文字` 里存着**全部**改动（每改一处就写进去、还落了盘），
+   *      导出就从它出，跟当前在哪一页无关。
+   *
+   * ⚠️ 别改回扫 DOM。那个写法看着"眼见为实"，实际只能看见**一页**。
    */
-  // ⚠️ 必须是 `$$`（querySelectorAll）—— 写成 `$` 拿到的是单个元素，
-  //    `for...of` 一个 DOM 元素会抛 "not iterable"，**整个导出连坐**（13 项检查全红）。
-  for (const el of $$('.d-editable[data-dkey]')) {
-    // 键用 scope+base 拼（`habit#2/title` 这种），比内部的 `scope|base` 好读
-    const sc = el.dataset.dscope || 'panel';
-    const bs = el.dataset.dbase || el.dataset.dkey;
-    out.文字[sc + '/' + bs] = (el.textContent || '').trim();
+  for (const [scope, items] of Object.entries(state.文字 || {})) {
+    for (const [base, val] of Object.entries(items || {})) {
+      out.文字[scope + '/' + base] = val;
+    }
   }
 
   // 分组移动（调试台搬过的组）
   if (moves.length) out.分组移动 = moves.slice();
+
+  // 空段别写进 JSON —— 导出文件干净点，他好读
+  if (!Object.keys(out.文字).length) delete out.文字;
+  if (!Object.keys(out.结构).length) delete out.结构;
 
   return out;
 }
