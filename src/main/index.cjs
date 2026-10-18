@@ -43,6 +43,7 @@ const profiletool = require('../core/profiletool.cjs');
 const autostart = require('../core/autostart.cjs');
 const fonts = require('./fonts.cjs');
 const ai = require('./ai.cjs');
+const mouse = require('./mouse.cjs');
 const websearch = require('../core/websearch.cjs');
 const capture = require('../core/capture.cjs');
 const peeker  = require('../core/peeker.cjs');
@@ -199,57 +200,8 @@ function resizeStage() {
  *      两边都改会互相打架（页面每 500ms 重申一次，会把主进程的改动顶回去）。
  *   ⚠️ 只在**从内到外**那一下发一次，不是每 120ms 都发（省 IPC、也好读日志）。
  */
-let cursorWatch = null;
-let cursorWasInside = null;
-function startCursorWatch() {
-  if (cursorWatch) return;
-  cursorWatch = setInterval(() => {
-    if (!win || win.isDestroyed() || !win.isVisible()) return;
-    try {
-      const b = win.getBounds();
-      const p = screen.getCursorScreenPoint();
-      const inside = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
-      /*
-       * ★★★ 2026-10-18：**每一拍都把光标位置推给页面**（不只是"离开"那一下）。
-       *
-       *   为什么（#6 的最后一个根因，真机日志实锤）：
-       *     `setIgnoreMouseEvents(true,{forward:true})` 在 Windows 上**只转发了
-       *     `mouseup`，`mousemove` 会断**（实测：t=46.457 之后 move 一条都没有，
-       *     可 up 一直有到 52s）。而页面**靠 mousemove 更新"鼠标在哪"** ——
-       *     move 一断，`lastMouse` 就冻住，页面永远判"不在她身上"⇒ 穿透永远开着
-       *     ⇒ 再也点不着。**这是死锁，自己解不开。**
-       *
-       *   ⇒ 改由主进程**主动喂坐标**：它每 120ms 本来就在查（`screen.getCursorScreenPoint`），
-       *     多推一个坐标几乎零成本（8 条/秒、两个数字）。
-       *   ⚠️ 坐标是**屏幕 DIP**，页面那边减掉 `window.screenX/screenY` 就是 client 坐标。
-       *   ⚠️ 这仍然**不改穿透** —— 主进程只喂"鼠标在哪"，收不收回还是页面说了算（铁律不破）。
-       */
-      /*
-       * ⚠️ 发的是**相对比例**，不是绝对坐标 —— 2026-10-18 实测踩的坑：
-       *     `screen.getCursorScreenPoint()` 和页面 client 坐标**不是一个单位**
-       *     （中间夹着 125% 缩放 + 窗口原点），直接减会得到离谱的数（实测差 153~474px）。
-       *     发 0~1 的比例，页面乘自己的 `innerWidth/innerHeight`，**单位问题自动消失**。
-       */
-      win.webContents.send('win:cursor-pos', {
-        rx: b.width ? (p.x - b.x) / b.width : -1,
-        ry: b.height ? (p.y - b.y) / b.height : -1,
-        inside,
-        /* 诊断用：把原始数字一并带上，单位对不上一眼就看出来 */
-        raw: { x: p.x, y: p.y },
-        bounds: { x: b.x, y: b.y, w: b.width, h: b.height },
-        sf: (screen.getDisplayNearestPoint(p) || {}).scaleFactor || 1,
-      });
-      if (inside === cursorWasInside) return;
-      cursorWasInside = inside;
-      if (!inside) {
-        // 光标出了那条带 ⇒ 桌面必须点得动 ⇒ 让页面把穿透打开
-        win.webContents.send('win:cursor-out');
-      }
-      // ⚠️ 光标**进来**时什么都不做：收不收回由页面的 hitPet 决定（她走动了就不该收）
-    } catch { /* 窗口正在销毁，下一秒就没了 */ }
-  }, 120);
-  if (typeof cursorWatch.unref === 'function') cursorWatch.unref();
-}
+/* 光标守望 2026-10-18 拆到 ./mouse.cjs 了（startCursorWatch）——
+   它只发事件、不改穿透，所以跟穿透那几块放一起查最方便。 */
 
 function createWindow() {
   const box = placeWindow();
@@ -333,11 +285,11 @@ function createWindow() {
    *   ⚠️ 下面这两个回调里**千万不要**再去写 `setIgnoreMouseEvents`（见上面那段血泪注释）。
    */
   win.on('show', () => {
-    plog(`[窗口] show（visible=${win.isVisible()} ignore=${lastIgnore}）`);
+    plog(`[窗口] show（visible=${win.isVisible()} ignore=${mouse.lastIgnoreValue()}）`);
     try { win.webContents.send('win:shown'); } catch { /* 页面还没加载完就算了 */ }
   });
   win.on('hide', () => {
-    plog(`[窗口] hide（ignore=${lastIgnore}）`);
+    plog(`[窗口] hide（ignore=${mouse.lastIgnoreValue()}）`);
   });
 
   const url = process.env.YACHIYO_URL;
@@ -869,32 +821,16 @@ ipcMain.handle('cfg:dir',   () => cfg.DIR);
  *      ② `ignoreLog` —— 最近 20 次 IPC 的**原始流水**（含时间戳、不去重）
  *         ⇒ 分辨「页面根本没发」和「发了但没生效」靠的就是这一份
  */
-let lastIgnore = null;
-let lastIgnoreLogged = null;
-const ignoreLog = [];
-ipcMain.on('win:ignore-mouse', (_e, on) => {
-  const v = !!on;
-  lastIgnore = v;
-  ignoreLog.push({ t: Date.now(), on: v });
-  if (ignoreLog.length > 20) ignoreLog.shift();
-  /*
-   * ★★ 2026-10-18：**每一条 IPC 都落盘**（不去重），只给探针用。
-   *
-   *   为什么非要有：`plog` 那条是"变了才记"，于是「页面根本没发」和
-   *   「发了、Shell 没收」在日志里长得一模一样 —— 查了五轮就栽在这儿。
-   *   这条记的是"我确实收到了这一拍"，配上系统位那份（`style-watch.ps1`）
-   *   才能定死到底是哪一段断的。
-   */
-  if (PROBE_MS > 0) {
-    try { fs.appendFileSync(path.join(PROBE_ROOT, '_ignore.log'), `${Date.now()} ${v ? 1 : 0}
-`, 'utf8'); } catch { /* 日志写不了不该影响主流程 */ }
-  }
-  win?.setIgnoreMouseEvents(v, { forward: true });
-  if (lastIgnoreLogged !== v) {
-    lastIgnoreLogged = v;
-    plog(`[鼠标] 穿透 ${on ? '打开（鼠标会穿过去）' : '收回（她能点着了）'}`);
-  }
+/* win:ignore-mouse 2026-10-18 拆到 ./mouse.cjs 了（含 lastIgnore / ignoreLog 记账） */
+mouse.attach({
+  getWin: () => win,
+  plog,
+  screen,
+  probeRoot: PROBE_ROOT,
+  probeMs: PROBE_MS,
+  sysIdleSeconds: () => (heartbeat.idleMinutes() >= 0 ? heartbeat.idleMinutes() * 60 : null),
 });
+mouse.register(ipcMain);
 
 /*
  * ★ 他碰她了 → 把她从「准备睡」里叫醒（2026-10-17 加的）。
@@ -1367,32 +1303,7 @@ ai.register(ipcMain, cfg);
 /* 字体那一块（FONT_EXT / fontFile / 三个 IPC）2026-10-18 拆到 ./fonts.cjs 了 */
 fonts.register(ipcMain, cfg);
 
-// 窗口的真实状态 —— 自检要拿它对账「页面改了配置，主进程到底落没落地」
-ipcMain.handle('win:state', () => {
-  if (!win) return null;
-  return {
-    visible: win.isVisible(),
-    alwaysOnTop: win.isAlwaysOnTop(),
-    focusable: win.isFocusable(),
-    bounds: win.getBounds(),
-    /*
-     * 他多久没碰键鼠了（**秒**）。
-     *
-     * ⚠️ 就是 `powerMonitor.getSystemIdleTime()` 的**原样** ——
-     *    不在这儿除 60。渲染层/探针要分钟自己除，但**主进程这层别做换算**：
-     *    一换算就有两个地方记着"单位是分钟"，改一处忘一处。
-     *    （旧工程踩过：把秒当分钟用，于是"他刚动了"被当成"他走了十分钟"。）
-     */
-    sysIdleSeconds: heartbeat.idleMinutes() >= 0 ? heartbeat.idleMinutes() * 60 : null,
-    /*
-     * ★ 穿透状态（2026-10-18 加的，为 #6「显示后点不动」）。
-     *   `ignore` = 主进程**最后一次真的设下去**的值；`ignoreLog` = 最近 20 次原始 IPC。
-     *   ⚠️ 这两个是**诊断口**，不是控制口 —— 别拿它当状态机去读着改东西。
-     */
-    ignore: lastIgnore,
-    ignoreLog: ignoreLog.slice(-20),
-  };
-});
+/* win:state 2026-10-18 拆到 ./mouse.cjs 了 */
 
 ipcMain.on('app:quit', () => { app.isQuitting = true; app.quit(); });
 
@@ -1409,7 +1320,7 @@ const trayApi = {
      *   ⚠️ 之前 `plog` 只在探针模式（`YACHIYO_MS > 0`）才写 —— 他日常那次什么都没留下。
      *   ⇒ 记「托盘要干什么 + 当时穿透是什么值 + 之后可见性是什么」，两行，够对齐时间线。
      */
-    plog(`[托盘] ${next ? '显示' : '隐藏'}（之前 visible=${!next} ignore=${lastIgnore}）`);
+    plog(`[托盘] ${next ? '显示' : '隐藏'}（之前 visible=${!next} ignore=${mouse.lastIgnoreValue()}）`);
     if (next) { win.show(); win.setAlwaysOnTop(!!cfg.get('alwaysOnTop'), 'screen-saver'); }
     else win.hide();
     cfg.set('petVisible', next);
@@ -1522,7 +1433,7 @@ if (!app.requestSingleInstanceLock()) {
       plog('[providers] 迁移失败（不影响她用）：' + err.message);
     }
     createWindow();
-    startCursorWatch();     // ★ 光标守望：出了那条带就通知页面打开穿透（见函数注释）
+    mouse.startCursorWatch();     // ★ 光标守望：出了那条带就通知页面打开穿透（见函数注释）
 
     /*
      * ★ 游戏检测（2026-10-17 加的）：他在全屏游戏里就让她坐着。
