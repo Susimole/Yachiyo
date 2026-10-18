@@ -393,51 +393,64 @@ function reassertMouse(nowMs) {
  *      那种情况等不到 mousemove，必须按时间硬开，否则桌面点不动。
  */
 const OFF_GRACE_MS = 320;
-let offTimer = null;
-let offForce = false;
-let offPendingSince = 0;
 
-function openPassthroughSoon(force) {
-  offForce = offForce || !!force;
-  if (offTimer) return;                     // 已经在等了
-  offPendingSince = performance.now();
-  offTimer = setTimeout(() => {
-    offTimer = null;
-    const hard = offForce;
-    offForce = false;
-    if (!hard) {
-      // 到点了再判一次：万一这 320ms 里又飘进她矩形了，就别开
-      const on = lastMouse.x >= 0 && nearPet(lastMouse.x, lastMouse.y);
-      if (on) return;
-    }
-    wantInteractive(false);
-  }, OFF_GRACE_MS);
-}
-
-function cancelPassthrough() {
-  offForce = false;
-  if (offTimer) { clearTimeout(offTimer); offTimer = null; }
-}
-
-/**
- * 主窗口收不收鼠标 —— **只取决于鼠标是不是真的压在她身上**。
+/*
+ * ★★★ 2026-10-18：**只留一个权威**（#6 的第五个根因，也是最后一个）。
  *
- * ⚠️⚠️ 2026-10-12：这里原来是
- *      `if (dragging || menuOpen() || panelOpen() || chatOpen()) wantInteractive(true)`
- *    —— 因为菜单/面板/聊天窗都在**这个窗口**里，要让它们能点，只能把整个窗口
- *    的穿透关掉。而这个窗口盖着屏幕，于是**打开一个 212×258 的菜单，
- *    整块屏幕都点不到后面的东西了**（他报的「严重」之一）。
+ *   真机三份日志对齐后看到的事实：
+ *     17:29:22.527  页面 want=1 near=1 hit=1      ← 光标确实在她身上
+ *     17:29:22.582  IPC 发 ignore=1（要穿）        ← 60ms 后自己顶回去了
+ *     17:29:22.683  系统 穿透位=1                  ← 于是按下就丢
  *
- *    现在那三个各自是独立小窗，主窗口只要管她自己 ——
- *    「鼠标压在她身上」这一个条件就够了，别的全交给各自的窗口。
+ *   为什么：`want` 有**四个东西在改**，时钟各不相同 ——
+ *     · `mousemove`（真实事件，不定时）
+ *     · 主进程喂坐标（每 120ms）
+ *     · `reassertMouse`（每 500ms）
+ *     · 开穿透的 320ms 定时器（异步落地）
+ *   于是出现「near=1 但 want=0」这种自相矛盾的采样，按下就落在缝里。
+ *
+ *   ⇒ 改成**单一权威**：只有 `mouseTick()` 会改 `want`，它每 50ms 跑一次，
+ *     永远拿**最新的** `lastMouse` 去算 `nearPet`。其他来源**只更新坐标**。
+ *     320ms 的宽限仍然保留（连续 320ms 都不中才开穿透），但判定不再由定时器
+ *     异步"回查"，而是每拍自然重算 —— 竞态消失。
  */
+let mouseTickTimer = null;
+let offSince = 0;            // 从什么时候开始"不在她身上"
+let lastCompute = { near: null, at: 0 };
+
+function mouseTick() {
+  const now = performance.now();
+  const has = lastMouse.x >= 0 && lastMouse.y >= 0;
+  const near = has ? nearPet(lastMouse.x, lastMouse.y) : false;
+  lastCompute = { near, at: now };
+  if (dragging) { wantInteractive(true); return; }
+  if (near) {
+    offSince = 0;
+    wantInteractive(true);           // 中了就**立刻**收回穿透
+    return;
+  }
+  if (!offSince) offSince = now;
+  if (now - offSince >= OFF_GRACE_MS) wantInteractive(false);   // 连续 320ms 不中才开门
+}
+
+function startMouseTick() {
+  if (mouseTickTimer) return;
+  mouseTickTimer = setInterval(mouseTick, 50);
+}
+
+/* 兼容旧调用点：现在它们**只提供坐标**，判定一律交给 mouseTick */
 function refreshMouse(e) {
   if (e) lastMouse = { x: e.clientX, y: e.clientY };
-  if (dragging) { cancelPassthrough(); wantInteractive(true); return; }
-  const on = lastMouse.x >= 0 ? nearPet(lastMouse.x, lastMouse.y) : false;
-  if (on) { cancelPassthrough(); wantInteractive(true); }   // 进了她的矩形就**立刻**收回穿透
-  else openPassthroughSoon(false);                          // 出去了先等等，别急着开门
+  mouseTick();
 }
+
+/*
+ * ⚠️ 2026-10-12 的老教训留在这儿（别丢）：
+ *   这里曾经是 `if (dragging || menuOpen() || panelOpen() || chatOpen()) wantInteractive(true)`
+ *   —— 菜单/面板/聊天窗当时都在**这个窗口**里，要让它们能点，只能把整个窗口的穿透关掉；
+ *   可这个窗口盖着屏幕，于是**打开一个 212×258 的菜单，整块屏幕都点不到后面的东西了**。
+ *   现在那三个各自是独立小窗，主窗口只要管她自己 —— 判定只看「鼠标在不在她身上」。
+ */
 
 /*
  * ★ 她什么时候才「看着鼠标」—— 2026-10-17 加的（他报的「眼动跟随全局生效」）。
@@ -1267,10 +1280,13 @@ async function boot() {
 
   /*
    * 主进程说「光标出了窗口那条带」—— 这时候等不到 mousemove，
-   * 必须按时间**硬开**穿透，否则桌面点不动（见 openPassthroughSoon 的 force）。
+   * 必须让"不中"的计时**立刻开始**（否则桌面点不动）—— 但开不开仍由 mouseTick 统一决定。
    * 页面对 `mouseleave` 只切眼动，不碰穿透。
    */
-  window.yachiyo.on('win:cursor-out', () => { openPassthroughSoon(true); });
+  window.yachiyo.on('win:cursor-out', () => {
+    // 光标出了整条带：等不到 mousemove 了，直接进入"不中"的计时（由 mouseTick 统一收口）
+    if (!offSince) offSince = performance.now();
+  });
 
   /*
    * ★★★ 主进程每 120ms 喂一次光标位置（2026-10-18，解 #6 的死锁）。
@@ -1294,8 +1310,8 @@ async function boot() {
     feedLast = { x: lastMouse.x, y: lastMouse.y, t: performance.now(), inside: !!p.inside };
     feedRaw = { raw: p.raw, bounds: p.bounds, sf: p.sf, rx: p.rx, ry: p.ry,
                 iw: window.innerWidth, ih: window.innerHeight };
-    if (!p.inside) { openPassthroughSoon(true); return; }
-    refreshMouse(null);          // 用新坐标重算一次（不传事件，别再覆盖 lastMouse）
+    if (!p.inside && !offSince) offSince = performance.now();
+    mouseTick();                 // 统一走唯一权威（只更新坐标，判定在 mouseTick 里）
   });
 
   /*
@@ -1435,8 +1451,9 @@ async function boot() {
        *   `pending` 卡住不动 = 判定一直不中（真不在她身上）；
        *   频繁跳 true/false = 掩码判定在抖（那就是 #6 的形状）。
        */
-      pending: !!offTimer,
-      pendingSince: offPendingSince,
+      pending: !!(offSince && performance.now() - offSince < OFF_GRACE_MS),
+      pendingSince: offSince,
+      nearAt: lastCompute.at,
       /* ★ 坐标系对不对：`feedErr` 是「喂来的坐标」和「真实 mousemove」的最大偏差 */
       feed: feedLast ? { x: feedLast.x, y: feedLast.y } : null,
       feedRaw,
@@ -1446,6 +1463,7 @@ async function boot() {
     speak,
   };
 
+  startMouseTick();          // ★ 穿透判定的唯一时钟（见 mouseTick 的注释）
   console.log('[app] 起来了 —— 她有 ' + rig.currentSet.count + ' 个件');
   requestAnimationFrame(loop);
 

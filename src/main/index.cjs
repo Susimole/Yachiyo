@@ -875,6 +875,18 @@ ipcMain.on('win:ignore-mouse', (_e, on) => {
   lastIgnore = v;
   ignoreLog.push({ t: Date.now(), on: v });
   if (ignoreLog.length > 20) ignoreLog.shift();
+  /*
+   * ★★ 2026-10-18：**每一条 IPC 都落盘**（不去重），只给探针用。
+   *
+   *   为什么非要有：`plog` 那条是"变了才记"，于是「页面根本没发」和
+   *   「发了、Shell 没收」在日志里长得一模一样 —— 查了五轮就栽在这儿。
+   *   这条记的是"我确实收到了这一拍"，配上系统位那份（`style-watch.ps1`）
+   *   才能定死到底是哪一段断的。
+   */
+  if (PROBE_MS > 0) {
+    try { fs.appendFileSync(path.join(PROBE_ROOT, '_ignore.log'), `${Date.now()} ${v ? 1 : 0}
+`, 'utf8'); } catch { /* 日志写不了不该影响主流程 */ }
+  }
   win?.setIgnoreMouseEvents(v, { forward: true });
   if (lastIgnoreLogged !== v) {
     lastIgnoreLogged = v;

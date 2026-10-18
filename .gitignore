@@ -18,6 +18,9 @@ _v*.txt
 _shot-*.png
 _probe-shot.png
 _probe.log
+# 探针的双端日志（2026-10-18 加的，只给排查 #6 用，别进仓库）
+_ignore.log
+_page.log
 _log-*.txt
 _selfcheck-home*/
 _selfcheck-*.json
