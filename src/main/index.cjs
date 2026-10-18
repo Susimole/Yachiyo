@@ -288,6 +288,26 @@ function createWindow() {
   // 这行曾经写在模块作用域里，那时 win 还是 null）
   overlay.attach(win);
 
+  /*
+   * ★★ 2026-10-18：show / hide 的**观测点**（只记、只通知，**一律不改穿透状态**）。
+   *
+   *   为什么需要（#6「隐藏后再显示，左键拖不动」查了三轮还是没定因）：
+   *     · `plog` 只在探针模式写 ⇒ 他日常那次一点痕迹都没有，只能靠回忆
+   *     · 页面那边**根本不知道**窗口被显示过 —— 它手里只有 `wantMouse`，
+   *       一旦主进程这边（曾经）私自改过穿透，页面永远发现不了
+   *
+   *   ⇒ 主进程把「我被显示了」这件事**通知给页面**（`win:shown`），
+   *     由**页面**决定要不要重申穿透 —— 控制点仍然唯一，铁律不破。
+   *   ⚠️ 下面这两个回调里**千万不要**再去写 `setIgnoreMouseEvents`（见上面那段血泪注释）。
+   */
+  win.on('show', () => {
+    plog(`[窗口] show（visible=${win.isVisible()} ignore=${lastIgnore}）`);
+    try { win.webContents.send('win:shown'); } catch { /* 页面还没加载完就算了 */ }
+  });
+  win.on('hide', () => {
+    plog(`[窗口] hide（ignore=${lastIgnore}）`);
+  });
+
   const url = process.env.YACHIYO_URL;
   if (url) win.loadURL(url);
   else win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -378,7 +398,7 @@ function applyMainSideEffect(k, v) {
  *    渲染外部内容）Key 就漏了；二是他截图发群里时，设置面板里的 Key 明晃晃的。
  * 页面只需要知道「配没配」—— 非空就是配了。写的时候照样能写（他手输的那次）。
  */
-const SECRET_KEYS = ['apiKey'];
+const SECRET_KEYS = ['apiKey', 'screenKey'];
 function maskForPage(c) {
   const out = { ...c };
   for (const k of SECRET_KEYS) {
@@ -810,12 +830,24 @@ ipcMain.handle('cfg:dir',   () => cfg.DIR);
  *      不去重的话 `_probe.log` 一天能涨十几万行。
  *   ⚠️ 只记"变了"的那一下，所以他下次复现的时候，这份日志能直接告诉我们：
  *      显示之后穿透到底**有没有被收回来**（`收回` 那条就是"能点着了"）。
+ *
+ * ★★ 2026-10-18 补：光有"变了才记"**不够诊断**（#6 复现不出来就是证据不足）。
+ *    又加了两个抓手，都只读、不影响行为：
+ *      ① `lastIgnore` —— 主进程这边**最后一次真的设下去的值**（`win:state` 里报出去）
+ *      ② `ignoreLog` —— 最近 20 次 IPC 的**原始流水**（含时间戳、不去重）
+ *         ⇒ 分辨「页面根本没发」和「发了但没生效」靠的就是这一份
  */
+let lastIgnore = null;
 let lastIgnoreLogged = null;
+const ignoreLog = [];
 ipcMain.on('win:ignore-mouse', (_e, on) => {
-  win?.setIgnoreMouseEvents(!!on, { forward: true });
-  if (lastIgnoreLogged !== !!on) {
-    lastIgnoreLogged = !!on;
+  const v = !!on;
+  lastIgnore = v;
+  ignoreLog.push({ t: Date.now(), on: v });
+  if (ignoreLog.length > 20) ignoreLog.shift();
+  win?.setIgnoreMouseEvents(v, { forward: true });
+  if (lastIgnoreLogged !== v) {
+    lastIgnoreLogged = v;
     plog(`[鼠标] 穿透 ${on ? '打开（鼠标会穿过去）' : '收回（她能点着了）'}`);
   }
 });
@@ -1322,9 +1354,23 @@ ipcMain.handle('ai:ping', async () => {
  *     ③ 还是不行 → 说人话：地址是通的，但这家要鉴权才能列模型
  *   ⚠️ 做不到「永远不填 Key 也能检测」—— 官方端点（实测 DeepSeek）不带 Key 就是 401。
  */
-ipcMain.handle('ai:models', async () => {
+ipcMain.handle('ai:models', async (_e, o) => {
+  /*
+   * ★ 2026-10-18 加的**可选参数**（不传 = 老行为，主对话那套）：
+   *     `{ which: 'screen' }` —— 问「识图」那一套（screenBase / screenKey / screenModel）。
+   *     `{ base, key }`     —— 显式指定（留给以后，页面上别传 key：页面收到的是打码值）。
+   *
+   *   ⚠️ 为什么密钥必须由**主进程**自己从磁盘取：
+   *      页面拿到的 `apiKey` / `screenKey` 是 `••••••••`（`maskForPage`），
+   *      它传回来的"钥匙"根本不是钥匙。
+   */
   const c = cfg.all();
-  if (!c.apiBase) return { ok: false, error: '还没填接口地址', needsBase: true };
+  const arg = (o && typeof o === 'object') ? o : {};
+  const which = arg.which === 'screen';
+  const base = String(arg.base || (which ? (c.screenBase || c.apiBase) : c.apiBase) || '').trim();
+  const key = String(arg.key || (which ? (c.screenKey || c.apiKey) : c.apiKey) || '').trim();
+  const cur = String(arg.current || (which ? (c.screenModel || c.model) : c.model) || '');
+  if (!base) return { ok: false, error: '还没填接口地址', needsBase: true };
 
   const bail = (err) => ({
     ok: false,
@@ -1332,7 +1378,7 @@ ipcMain.handle('ai:models', async () => {
     noList: !!err.noList,
     needsKey: !!err.needsKey,
     status: err.status,
-    current: c.model,
+    current: cur,
   });
 
   /*
@@ -1341,15 +1387,15 @@ ipcMain.handle('ai:models', async () => {
    */
   try {
     try {
-      const r = await provider.listModels({ base: c.apiBase, key: '' });
-      return { ok: true, url: r.url, ids: r.ids, current: c.model, keyed: false };
+      const r = await provider.listModels({ base, key: '' });
+      return { ok: true, url: r.url, ids: r.ids, current: cur, keyed: false };
     } catch (err) {
       const needAuth = err.status === 401 || err.status === 403;
 
       // ① 这家要鉴权，而且他还没填 Key → 把「地址是通的、只差钥匙」说清楚
-      if (needAuth && !c.apiKey) {
+      if (needAuth && !key) {
         return {
-          ok: false, current: c.model, needsKey: true, status: err.status,
+          ok: false, current: cur, needsKey: true, status: err.status,
           error: '地址是通的，但这家要鉴权才肯给模型清单 —— 填上 API Key 再点一次',
         };
       }
@@ -1357,8 +1403,8 @@ ipcMain.handle('ai:models', async () => {
       // ② 要鉴权、也填了 Key → 拿 Key 重试一次
       if (needAuth) {
         try {
-          const r = await provider.listModels({ base: c.apiBase, key: c.apiKey });
-          return { ok: true, url: r.url, ids: r.ids, current: c.model, keyed: true };
+          const r = await provider.listModels({ base, key });
+          return { ok: true, url: r.url, ids: r.ids, current: cur, keyed: true };
         } catch (err2) {
           if (!(err2.status === 401 || err2.status === 403)) return bail(err2);
           return bail(Object.assign(new Error('地址通了，但 Key 不对 —— 这家不认这把钥匙'), {
@@ -1447,6 +1493,13 @@ ipcMain.handle('win:state', () => {
      *    （旧工程踩过：把秒当分钟用，于是"他刚动了"被当成"他走了十分钟"。）
      */
     sysIdleSeconds: heartbeat.idleMinutes() >= 0 ? heartbeat.idleMinutes() * 60 : null,
+    /*
+     * ★ 穿透状态（2026-10-18 加的，为 #6「显示后点不动」）。
+     *   `ignore` = 主进程**最后一次真的设下去**的值；`ignoreLog` = 最近 20 次原始 IPC。
+     *   ⚠️ 这两个是**诊断口**，不是控制口 —— 别拿它当状态机去读着改东西。
+     */
+    ignore: lastIgnore,
+    ignoreLog: ignoreLog.slice(-20),
   };
 });
 
@@ -1460,10 +1513,17 @@ const trayApi = {
   toggleShow() {
     if (!win) return;
     const next = !win.isVisible();
+    /*
+     * ★ 2026-10-18 加的日志：**这就是他复现 #6 走的那条路**。
+     *   ⚠️ 之前 `plog` 只在探针模式（`YACHIYO_MS > 0`）才写 —— 他日常那次什么都没留下。
+     *   ⇒ 记「托盘要干什么 + 当时穿透是什么值 + 之后可见性是什么」，两行，够对齐时间线。
+     */
+    plog(`[托盘] ${next ? '显示' : '隐藏'}（之前 visible=${!next} ignore=${lastIgnore}）`);
     if (next) { win.show(); win.setAlwaysOnTop(!!cfg.get('alwaysOnTop'), 'screen-saver'); }
     else win.hide();
     cfg.set('petVisible', next);
     trayMod.refresh(cfg, trayApi);
+    plog(`[托盘] ${next ? '显示' : '隐藏'}完成（visible=${win.isVisible()} bounds=${JSON.stringify(win.getBounds())}）`);
   },
   set(k, v) {
     cfg.set(k, v);

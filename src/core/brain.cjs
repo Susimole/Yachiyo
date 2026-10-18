@@ -125,14 +125,24 @@ async function reply(text, o = {}) {
    *      所以下面剥标记/入库那段要拿**第二次**的 `out`。
    */
   let lookDesc = '';
+  /*
+   * ★ 2026-10-18：**她是怎么看见的**也要记下来。
+   *   原来只留 `lookDesc`（一段文字），可 `describe()` 明明还返回了
+   *   `via`（chat / vision / blind）和耗时 —— 全被扔了。
+   *   于是"我看见了"和"我说了一句固定文案"在记录里**长得一模一样**，
+   *   这就是最难查的那种假成功。
+   */
+  let lookMeta = null;   // { desc, via, ms }
   if (Array.isArray(out.toolCalls) && out.toolCalls.length) {
     const call = out.toolCalls.find((t) => t.name === 'look_screen');
     if (call) {
       try {
         const r = await looktool.describe({ fromChat: true });
         lookDesc = r.text || looktool.BLIND;
+        lookMeta = { desc: lookDesc, via: r.via || '', ms: r.ms || 0 };
       } catch (err) {
         lookDesc = looktool.BLIND;
+        lookMeta = { desc: lookDesc, via: 'blind', ms: 0, why: 'describe 抛异常：' + err.message };
       }
       messages.push({
         role: 'assistant',
@@ -198,8 +208,12 @@ async function reply(text, o = {}) {
      *    他要求「看完的描述要进聊天记录」。
      *    正文仍然是她说的话；描述挂在旁边，翻记录时能对上"她当时看到了什么"，
      *    而且**不污染对话流**（下一轮模型读到的是 `content`，不会把描述当成她说的话）。
+     *
+     * ★ 2026-10-18：`look` 从"一段文字"升级成 `{ desc, via, ms }`。
+     *   ⚠️ 读老记录的人要兼容字符串（`typeof look === 'string'`）——
+     *      2026-10-18 之前写进去的全是字符串。
      */
-    memory.push('assistant', out.text, lookDesc ? { look: lookDesc } : {});
+    memory.push('assistant', out.text, lookMeta ? { look: lookMeta } : {});
   }
 
   // 这一轮梗库命中的热度，攒到现在一起落盘

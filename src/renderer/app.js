@@ -293,11 +293,20 @@ function hitPet(cx, cy) {
 let wantMouse = false;
 let lastMouse = { x: -1, y: -1 };
 
+/*
+ * ★ 诊断计数（2026-10-18 加的，为 #6）。
+ *   为了分清「页面根本没发」和「发了但没生效」—— 光看结果猜不出来。
+ */
+let sendCount = 0;       // 一共发了几次穿透 IPC
+let reassertCount = 0;   // 定期重申触发了几次（主循环那拍）
+let shownCount = 0;      // 收到几次「窗口显示了」
+
 /**
  * 真正发一次 IPC。
  * ⚠️ 分出来是为了**能重申**（见下面 reassertMouse）。
  */
 function sendMouseMode() {
+  sendCount++;
   try { window.yachiyo.win.ignoreMouse(!wantMouse); } catch { /* 桥还没接上就算了 */ }
 }
 
@@ -328,6 +337,7 @@ let lastReassert = 0;
 function reassertMouse(nowMs) {
   if (nowMs - lastReassert < 500) return;
   lastReassert = nowMs;
+  reassertCount++;
   sendMouseMode();
 }
 
@@ -1169,6 +1179,22 @@ async function boot() {
   window.yachiyo.on('win:cursor-out', () => { wantInteractive(false); });
 
   /*
+   * ★★ 主窗口被显示了（2026-10-18 加的，为 #6「隐藏后再显示，左键拖不动」）。
+   *
+   *   为什么必须有这一条：页面**根本不知道**窗口被藏过又显示过。
+   *   它手里只有 `wantMouse`；主进程那边（曾经）私自改过穿透的话，
+   *   `wantInteractive(on)` 被「状态没变就别发 IPC」那道闸挡住 ⇒ **永远不重发**。
+   *   上一轮那句 show 钩子就是这么把窗口卡在"忽略鼠标"里的。
+   *
+   *   ⇒ 一被显示，就地**无条件**重申一次（`sendMouseMode()` 不走那道闸）。
+   *     ⚠️ 控制点仍然只在页面这边 —— 主进程只发事件，不碰 `setIgnoreMouseEvents`。
+   */
+  window.yachiyo.on('win:shown', () => {
+    sendMouseMode();
+    shownCount++;
+  });
+
+  /*
    * ★ 打游戏了 / 打完了（2026-10-17 加的，判定在主进程的 core/gamedetect.cjs）。
    *
    *   ⚠️ 这里**只记标志**，真正的"钉住坐着"在主循环里每帧兜（见那边的注释）——
@@ -1273,6 +1299,15 @@ async function boot() {
       mask: !!maskData,
       hit: lastMouse.x >= 0 ? hitPet(lastMouse.x, lastMouse.y) : null,
       pos: { ...pos },
+      /*
+       * ★ 穿透诊断（2026-10-18）。#6 查不出来就是因为缺这几个数：
+       *   sends=0   ⇒ 页面压根没发（比如 500ms 那拍停了）
+       *   sends>0 但主进程 `win:state.ignore` 没跟着变 ⇒ 发是发了，落地失败
+       */
+      sends: sendCount,
+      reasserts: reassertCount,
+      showns: shownCount,
+      lastReassertAt: lastReassert,
     }),
     speak,
   };

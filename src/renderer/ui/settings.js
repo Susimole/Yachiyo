@@ -361,9 +361,26 @@ export const PAGES = [
           ['desktopCapturer','Electron'],
           ['gdi','GDI'],
         ], hint:'建议自动' },
+        /*
+         * ★ 2026-10-18：识图这一档**可以整套独立**（地址 / 密钥 / 模型）。
+         *
+         *   他 2026-10-18 的原话：「识图模型只能填入 API 地址，但实际调用应该需要
+         *   API 地址 + 密钥」—— 对，原来只有模型名一格，请求还是发往主对话那套
+         *   `apiBase + apiKey`。填个 Kimi 的模型名去问 DeepSeek，必然失败。
+         *   ⇒ 三个都留空 = 跟主模型一致（老行为不变）。
+         *   ⚠️ `screenKey` 用的是 `t:'key'`（密码框）**而且**在主进程的 SECRET_KEYS 里，
+         *      不然明文密钥会过桥进渲染层。
+         */
+        { t:'text', key:'screenBase', label:'识图地址',
+          ph:'留空＝跟主模型一样',
+          hint:'例：https://api.moonshot.cn/v1（没写 /v1 会自动补）' },
+        { t:'key', key:'screenKey', label:'识图密钥',
+          ph:'留空＝跟主模型一样' },
         { t:'text', key:'screenModel', label:'识图模型',
           ph:'留空＝跟主模型一样',
           hint:'⚠️ 要支持视觉的模型，不然她"看不见"还不报错' },
+        { t:'custom', key:'visionTest', label:'识图检测',
+          hint:'先检测，再试' },
         { t:'sw', key:'screenUseForeground', label:'进程识别',
           hint:'不截图她也能知道你在干什么' },
         { t:'sw', key:'screenAvoidRepeat', label:'静置静默',
@@ -590,6 +607,7 @@ const MOUNTS = {
   usageChart: (el) => mountUsageChart(el),
   usageStats: (el) => mountUsage(el),
   aiDebug: (el) => mountAiDebug(el),
+  visionTest: (el) => mountVisionTest(el),
   weatherTest: (el) => mountWeatherTest(el),
   cfgPath: (el) => mountCfgPath(el),
   designEntry: (el) => mountDesignEntry(el),
@@ -1275,6 +1293,69 @@ function mountWeatherTest(cell) {
     // 提示词里看到的就是这几行 —— 让他一眼知道她「知道」了什么
     body.innerHTML = '<pre class="wtext"></pre>';
     body.querySelector('.wtext').textContent = r.text;
+  };
+}
+
+/**
+ * 「识图检测」那一行 —— 只干一件事：问**识图那套地址**有哪些模型，点一下填进「识图模型」。
+ *
+ * ★ 2026-10-18 加的。他卡在这儿：识图模型只有一格模型名，可请求要的是
+ *   「地址 + 密钥 + 模型」三样。三样现在都能单独配了（screenBase/screenKey/screenModel），
+ *   那就得有个地方**问出这家的型号名**，不然只能瞎猜。
+ *
+ * ⚠️ 密钥**不在页面上传**：页面拿到的 screenKey 是 `••••••••`（主进程打码过的）。
+ *    这里只传 `{ which:'screen' }`，让主进程自己去磁盘取真钥匙。
+ * ⚠️ 只调 `GET /models`（免费）。**别在这儿偷偷发一次真请求** —— 那是花钱的事，
+ *    要花也让他在聊天里说"看看我屏幕"时花。
+ */
+function mountVisionTest(cell) {
+  cell.classList.add('stack');
+  cell.innerHTML =
+    '<div class="mrow-top">'
+    +   '<button class="btn primary" id="vsMdBtn">检测识图模型</button>'
+    +   '<span class="kv" id="vsOut"></span>'
+    + '</div>'
+    + '<div class="mlist" id="vsList"></div>';
+
+  const btn = cell.querySelector('#vsMdBtn');
+  const out = cell.querySelector('#vsOut');
+  const list = cell.querySelector('#vsList');
+
+  btn.onclick = async () => {
+    const before = btn.textContent;
+    btn.disabled = true; btn.textContent = '正在问…';
+    out.style.color = ''; out.textContent = '正在问识图那套地址…';
+    list.innerHTML = '';
+
+    let r;
+    try { r = await window.yachiyo.ai.models({ which: 'screen' }); }
+    catch (err) { r = { ok: false, error: err.message }; }
+
+    btn.disabled = false; btn.textContent = before;
+
+    if (!r.ok) {
+      const soft = r.noList || r.needsKey;
+      out.style.color = soft ? '' : '#e5484d';
+      out.textContent = (soft ? '· ' : '× ') + (r.error || '没查到');
+      return;
+    }
+
+    const ids = r.ids || [];
+    out.textContent = `查到 ${ids.length} 个模型（点一个就填进上面那格）`;
+    if (!ids.length) { list.innerHTML = '<div class="kv">这家一个模型都没列出来。</div>'; return; }
+
+    for (const id of ids) {
+      const b = document.createElement('button');
+      b.className = 'btn' + (id === (r.current || '') ? ' primary' : '');
+      b.textContent = id;
+      b.onclick = async () => {
+        await api.setCfg('screenModel', id);
+        for (const x of list.children) x.classList.remove('primary');
+        b.classList.add('primary');
+        out.textContent = '已填进「识图模型」：' + id;
+      };
+      list.appendChild(b);
+    }
   };
 }
 

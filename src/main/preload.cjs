@@ -158,7 +158,7 @@ contextBridge.exposeInMainWorld('yachiyo', {
     /** 拿真 key 问一句最短的，验通了才算数（花钱、慢） */
     ping: () => ipcRenderer.invoke('ai:ping'),
     /** 问接口地址有哪些模型（GET /models，免费、快） */
-    models: () => ipcRenderer.invoke('ai:models'),
+    models: (o) => ipcRenderer.invoke('ai:models', o),
   },
 
   /* ---------- 骨架参数（每个姿态各自那套） ---------- */
@@ -301,6 +301,14 @@ contextBridge.exposeInMainWorld('yachiyo', {
        * ⚠️ 又一条**必须登记**的 —— 页面靠它把穿透打开，不然桌面上的东西点不动。
        */
       'win:cursor-out',
+      /*
+       * ★★ 主窗口被**显示**了（2026-10-18 加的，为 #6「隐藏后再显示，左键拖不动」）。
+       *   页面靠它**无条件重申**一次穿透状态 —— 这是唯一能修掉
+       *   「页面以为没事、其实窗口还忽略着鼠标」的时机（控制点仍然只在页面）。
+       * ⚠️ 又是**必须登记**的一条：这个 on() 对没登记的频道是**静默丢弃**的，
+       *   漏了的话主进程照发、页面照收不到，而且一点报错都没有。
+       */
+      'win:shown',
       /*
        * ★ 他开始 / 结束打游戏了（全屏 + 进程检测，见 core/gamedetect.cjs）。
        * ⚠️ 必须登记 —— 页面靠它把她钉在「坐着」，漏了就是"打游戏时她还在来回走"。
