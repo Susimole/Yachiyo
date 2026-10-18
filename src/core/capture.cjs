@@ -434,9 +434,6 @@ module.exports = {
   MAX_W, GRID, BLANK_LEVEL,
   attach, setOwnPid, sample, hashOf, foreground, grab,
   /** ⚠️ 导出**只为排查** —— 那段 PS 里的输出格式出过问题，得能单独跑它 */
-  _gdiScript: (out, maxW) => gdiScript(out, maxW),
   /** ⚠️ 也是排查用 */
-  _decodeJpeg: (b) => decodeJpeg(b),
-  _markBlank: (s) => markBlank(s),
   _state: () => ({ hasElectron: !!(electron.desktopCapturer && electron.screen), ownPid, gdiWarned }),
 };
