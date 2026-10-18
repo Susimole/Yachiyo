@@ -288,6 +288,11 @@ function updateMask() {
  *   ⚠️ 代价：她矩形里的透明角落也归她（点那儿不会穿到桌面）。她 460×460，
  *      整条带 2048×560 ⇒ 最多占 18%，换来"点得着"，值。
  */
+/**
+ * ⚠️ **这个只是诊断用**（`debug().near`），**不参与穿透判定**。
+ *   2026-10-18 曾经拿它当过判定 → 判定面积变成整块画布，他当场报「面积明显增大」。
+ *   判定请用 `hitPet()`（像素轮廓）。
+ */
 function nearPet(cx, cy) {
   const w = petW();
   const pad = 4;
@@ -421,7 +426,20 @@ let lastCompute = { near: null, at: 0 };
 function mouseTick() {
   const now = performance.now();
   const has = lastMouse.x >= 0 && lastMouse.y >= 0;
-  const near = has ? nearPet(lastMouse.x, lastMouse.y) : false;
+  /*
+   * ★★★ 2026-10-18 晚：判定**改回像素轮廓**（`hitPet`）。
+   *
+   *   他报的：「点击交互判定面积明显增大了」—— 对，是我上一轮为了压抖动，
+   *   把判定换成了整块矩形 `nearPet`。矩形 = 她的画布框（460px 见方），
+   *   于是**框里所有透明角落也归她**，点在那儿不会被穿透到桌面，
+   *   手感上就是"她现在大了一圈"。
+   *
+   *   现在这样两头都要：
+   *     · 判定仍然看**像素轮廓**（`hitPet`，48×48 alpha 掩码 + 邻居搜索）⇒ 面积跟他熟悉的一致
+   *     · 抖动靠 `OFF_GRACE_MS`(320ms) 宽限 + 50ms 单一时钟压住
+   *       （一次没中不算没中，连续 320ms 都不中才开门）
+   */
+  const near = has ? hitPet(lastMouse.x, lastMouse.y) : false;
   lastCompute = { near, at: now };
   if (dragging) { wantInteractive(true); return; }
   if (near) {
