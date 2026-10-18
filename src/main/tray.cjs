@@ -32,7 +32,18 @@ function create(cfg, api) {
   const img = nativeImage.createFromPath(iconPath());
   tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
   tray.setToolTip('八千代');
-  tray.on('click', () => api.toggleShow());
+  /*
+   * ⚠️ 左键**什么都不做**（2026-10-17 他定的）。
+   *
+   *    这里原来挂的是 `tray.on('click', () => api.toggleShow())` ——
+   *    单击托盘图标就让她隐藏/显示。他原话：「单击状态栏桌宠图标会隐藏/显示桌宠，
+   *    这是刻意的设计吗，我们的桌宠并不需要这个设计」。
+   *
+   *    是刻意的，但理由不成立：他要看/藏她，右键菜单里第一项就是
+   *    「显示八千代 / 隐藏八千代」，而且那一条还会跟着当前状态换字。
+   *    两个入口并排摆着，左键那条还**没有提示**（点一下人突然没了），
+   *    所以留右键那一条就够，左键保持安静。
+   */
   refresh(cfg, api);
   return tray;
 }

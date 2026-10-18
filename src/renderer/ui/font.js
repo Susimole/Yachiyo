@@ -28,7 +28,11 @@ const FAMILY = 'YachiyoUI';
 
 /** 已经把哪个文件注册进来了（切字体时用来判断要不要重新读字节） */
 let loadedFile = null;
+/** 正在加载的那个 Promise，以及**它对应哪个文件** —— 见下面并发那一段 */
 let loading = null;
+let loadingFile = null;
+/** 已经加进 document.fonts 的那一个 face —— 切字体时要把旧的摘掉 */
+let curFace = null;
 
 /**
  * 按配置把界面字体落到 `--font-ui` 上。
@@ -51,8 +55,16 @@ export async function applyFont(cfg) {
     return { ok: true, file };
   }
 
-  // 并发调用时共用同一次加载（三个窗口 + 主题切换会同时叫）
-  if (loading === file) { await loading; return applyFont(cfg); }
+  /*
+   * 并发调用时共用同一次加载（三个窗口 + 主题切换会同时叫）。
+   *
+   * ⚠️ 这里原来写的是 `if (loading === file)` —— **恒不成立**：
+   *    `loading` 装的是**一个 Promise**（见下面 `loading = job`），
+   *    `file` 是个字符串。所以这个去重从来没生效过，
+   *    快速切字体时会真的并发读两遍字节、注册两个 face。
+   *    （2026-10-16 修的：另存一个 `loadingFile` 来比。）
+   */
+  if (loading && loadingFile === file) { await loading; return applyFont(cfg); }
 
   const job = (async () => {
     const r = await window.yachiyo.font.bytes(file);
@@ -61,11 +73,21 @@ export async function applyFont(cfg) {
     //    但显式取一下 buffer 更稳，某些 Electron 版本给的是裸 Buffer
     const ff = new FontFace(FAMILY, r.bytes.buffer ?? r.bytes);
     await ff.load();
+    /*
+     * ⚠️ 加新的之前先把**上一个摘掉**（2026-10-16 加的）。
+     *    注册用的族名是固定的 `YachiyoUI`（见文件头），不摘的话
+     *    document.fonts 里会攒下一堆**同名**的 face —— 而且全文件
+     *    从来没有任何一处 `delete` 过。来回切几次就一直往上堆。
+     *    摘失败就算了（可能压根没加进去），别让切字体挂在这儿。
+     */
+    if (curFace) { try { document.fonts.delete(curFace); } catch { /* 不在集合里 */ } }
     document.fonts.add(ff);
+    curFace = ff;
     return file;
   })();
 
   loading = job;
+  loadingFile = file;
   try {
     await job;
     loadedFile = file;
@@ -81,6 +103,7 @@ export async function applyFont(cfg) {
     return { ok: false, file, error: err.message };
   } finally {
     loading = null;
+    loadingFile = null;
   }
 }
 

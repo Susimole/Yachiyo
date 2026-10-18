@@ -12,7 +12,7 @@
  */
 
 import { Rig, CANVAS_PX } from './rig/rig.js';
-import { initBubble, showBubble, hideBubble, streamBubble, settleBubble, setSleeping } from './ui/bubble.js';
+import { initBubble, showBubble, hideBubble, streamBubble, settleBubble, setSleeping, followPet } from './ui/bubble.js';
 import { initSound, play as playSound, applyVolume } from './ui/sound.js';
 import { applyFont } from './ui/font.js';
 // ⚠️ 菜单 / 设置面板 / 聊天窗**不在这个页面里了** —— 它们各自搬去了独立的小窗口
@@ -156,6 +156,18 @@ function setPos(x, _y) {
   stage.style.left = Math.round(pos.x) + 'px';
   stage.style.top  = Math.round(pos.y) + 'px';
   updateMask();
+  /*
+   * ★ 她换位置了，气泡跟着挪（2026-10-16 接上的）。
+   *
+   *    `bubble.followPet()` 早就写好了、也导出了，**但全仓没人调它** ——
+   *    气泡的位置是 `place()` 一次性算死的，她走开了气泡就留在原地。
+   *
+   * ⚠️ 挂在 `setPos` 这**唯一出口**上（跟上面那个吞 y 参数一个道理）：
+   *    调用点十几处（拖动 / 走动 / 换套 / 改大小 / 恢复配置），漏一处就漏一处。
+   * ⚠️ 气泡没开的时候它在第一行就 return，走动时每帧叫它也不心疼。
+   *    只有"她一边走一边正说着话"才会真的重排 —— 那正是要的效果。
+   */
+  followPet();
 }
 
 /**
@@ -211,12 +223,29 @@ function clampPos() {
 const MASK = 48;
 let maskData = null;
 let maskTick = 0;
+let maskAt = 0;          // 上一次真正回读画布的时刻（节流用，见 updateMask）
 const mcv = document.createElement('canvas');
 mcv.width = mcv.height = MASK;
 const mctx = mcv.getContext('2d', { willReadFrequently: true });
 
 function updateMask() {
   if (!rig || !rig.currentSet) return;
+
+  /*
+   * ⚠️ 节流（2026-10-16 加的）。
+   *
+   *    她**走动**的时候 `setPos()` 是**每帧**调的（见那边的调用），
+   *    而这个函数每次都要 `drawImage` + `getImageData` —— **回读一次画布**。
+   *    一秒 60 次像素回读纯属浪费，还很吃 CPU。
+   *
+   *    掩码只用来判「鼠标压到她身上没」，晚 60ms 更新肉眼看不出：
+   *    48 格的掩码铺在 460px 的画布上，**一格约 9.6px**，
+   *    她一秒也走不过一格。≈ 每秒最多 16 次，跟上面主循环那条 `% 4` 一个量级。
+   */
+  const now = performance.now();
+  if (now - maskAt < 60) return;
+  maskAt = now;
+
   mctx.clearRect(0, 0, MASK, MASK);
   mctx.drawImage(cvs, 0, 0, MASK, MASK);
   const fresh = mctx.getImageData(0, 0, MASK, MASK).data;
@@ -320,6 +349,38 @@ function refreshMouse(e) {
   wantInteractive(lastMouse.x >= 0 ? hitPet(lastMouse.x, lastMouse.y) : false);
 }
 
+/*
+ * ★ 她什么时候才「看着鼠标」—— 2026-10-17 加的（他报的「眼动跟随全局生效」）。
+ *
+ *   两道闸，缺一不可：
+ *     · `rig.js` 的 `canGaze`：她得**歇着**（走路/跑动时眼睛看路，不追鼠标）
+ *     · 这一道：`lastInteract` 得是**最近**的 —— 他碰过她之后的 `gazeFollowSec` 秒内
+ *
+ *   为什么非加后面这道：主窗口是**整屏宽、贴屏幕底下的那一条**
+ *   （`main/index.cjs` 的 `placeWindow`），鼠标在那一条里动一下渲染层就收到 mousemove
+ *   —— 她于是从头到尾追着鼠标转眼睛，哪怕他只是路过、根本没打算理她。
+ *
+ *   ⚠️ 不跟的时候 `_updateGaze` 会把 hx/hy/pupil 送回 0（过弹簧慢慢回正），
+ *      所以她看起来是「看回正前方」，不是「眼珠僵住」。
+ */
+let lastInteract = 0;
+
+/**
+ * ★ 他是不是在全屏游戏里（2026-10-17 加的）。
+ * 由主进程的 `core/gamedetect.cjs` 判定（全屏 + 进程两条一起看），
+ * 通过 `game:changed` 推过来；这里只当标志用，**钉住坐着**在主循环里每帧兜。
+ */
+let gameMode = false;
+
+/** 记一次「他碰她了」—— 按她 / 拖她 / 双击她 / 右键她都算（见各自的调用点） */
+function markInteract() { lastInteract = performance.now(); }
+
+function gazeActive() {
+  const sec = Number(CFG.gazeFollowSec);
+  if (!(sec > 0)) return false;            // 0 / 坏值 = 干脆不跟
+  return performance.now() - lastInteract < sec * 1000;
+}
+
 /**
  * 右键 —— **只有点在她身上才弹菜单**。
  *
@@ -335,6 +396,7 @@ function initContextMenu() {
   document.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     if (!hitPet(e.clientX, e.clientY)) return;      // 没戳到她 → 什么都不做
+    markInteract();                                 // ★ 右键她也是一次互动
     window.yachiyo.ov.open('menu', { at: { x: e.clientX, y: e.clientY } });
   });
 
@@ -359,6 +421,8 @@ let dragging = null;
 
 cvs.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
+  markInteract();          // ★ 他按她了 → 接下来这一小段她追鼠标（见 gazeActive）
+  wakeUp();                // ★ 睡着的时候拖她/按她，也算「叫她」（见 wakeUp）
   dragging = {
     cx: e.clientX, cy: e.clientY,
     ox: pos.x, oy: pos.y,
@@ -376,7 +440,27 @@ window.addEventListener('mousemove', (e) => {
   mouseIdle = 0;
   lastAct = performance.now();
 
-  if (rig) rig.mouse = { x: e.clientX - pos.x, y: e.clientY - pos.y, on: true };
+  /*
+   * ⚠️⚠️ 传进去之前要**除以缩放倍数 k**（2026-10-16 修的）。
+   *
+   *    `e.clientX - pos.x` 是 **CSS 像素**，而 `rig._updateGaze()` 里
+   *    拿它跟 `CANVAS_PX / 2` 比 —— 那是**逻辑单位**（画布恒为 460.8）。
+   *    可画布实际占 `CANVAS_PX × k` 个 CSS 像素 ⇒ 不换算的话，
+   *    中性点会落在她身宽 **1/(2k)** 的位置上。
+   *
+   *    他配置里 `petSize: 60`（k=0.6）⇒ 中性点在 **83%** 处，
+   *    光标搁画面正中也算出负数 —— **她几乎永远朝左看**，纵向同理偏上。
+   *    （他报的原始现象就是「不是 100% 时眼动方向对不上」。）
+   */
+  if (rig) {
+    const k = (CFG.petSize || 100) / 100;
+    /*
+     * ⚠️ `on` 不再是恒 `true`（2026-10-17 他报的「眼动跟随是全局生效」）。
+     *    现在只有**刚互动过**（见 gazeActive / markInteract）才让她追鼠标 ——
+     *    光把鼠标挪到屏幕底下那条里，她不再跟了。
+     */
+    rig.mouse = { x: (e.clientX - pos.x) / k, y: (e.clientY - pos.y) / k, on: gazeActive() };
+  }
 
   if (dragging) {
     const dx = e.clientX - dragging.cx;
@@ -439,7 +523,13 @@ window.addEventListener('mouseup', async (e) => {
   } else {
     // 松手才写盘 —— 拖的过程中一直写会把磁盘刷爆
     await window.yachiyo.cfg.patch({ petX: pos.x, petY: pos.y });
-    speak('嘿咻～就放这儿吧');
+    /*
+     * ⚠️ 这里原来还有一句 `speak('嘿咻～就放这儿吧')` —— 2026-10-17 他要求删掉：
+     *    「删除桌宠拖动放下时的气泡台词『嘿咻~就放这儿吧』」。
+     *    拖她本来就是高频动作，每松一次手都蹦一句，久了很吵；
+     *    而「放这儿」这件事屏幕上的结果已经说清楚了，不需要嘴再讲一遍。
+     *    （单击、双击那些**主动戳她**才触发的台词都留着，只删这一句。）
+     */
   }
   refreshMouse(e);
 });
@@ -465,8 +555,48 @@ window.addEventListener('mouseup', async (e) => {
  */
 let draggedHandled = false;
 
-window.addEventListener('mouseup', () => {
-  if (!dragging) { draggedHandled = false; return; }
+window.addEventListener('mouseup', (e) => {
+  if (!dragging) {
+    /*
+     * ★★★ **mousedown 丢了的兜底**（2026-10-17 真机抓到的，他报的那个 bug）。
+     *
+     *   病根（实测记录，不是猜）：鼠标压在她身上时，页面这边 `want=true`
+     *   （认为该把穿透收回来），可窗口**还没真正收回**的那几十毫秒里，
+     *   **`mousedown` 会被桌面接走**、`mouseup` 却能进来。于是：
+     *       dragging 建不起来 → mouseup 里 `if (!dragging) return` → **onPetClick 不执行**
+     *   ⇒ 表现就是「点她没音效、没气泡」，而**右键照样能出菜单**
+     *     （`contextmenu` 不依赖 mousedown，它自己在 up 之后触发 —— 实测对得上）。
+     *   ⇒ 也解释了「她睡着的时候反而点得动」：睡着 = 她不动 ⇒ 鼠标早就落在她身上
+     *     ⇒ 穿透早收回了 ⇒ mousedown 能进来。
+     *
+     *   修法不跟穿透抢时间，而是**让 up 自己就能完成一次点击**：
+     *     up 的坐标如果命中了，就当这一下是点她。
+     *
+     *   ⚠️ 必须用 `e.clientX/Y` 判命中，**不能无脑当点击** ——
+     *      `blur` 里那个合成的 mouseup 坐标是 (0,0)，`hitPet(0,0)` 为 false，正好滤掉。
+     *   ⚠️ 拖动不受影响：真拖动时 `dragging` 是有的，走下面那条正式链路。
+     */
+    if (draggedHandled) { draggedHandled = false; return; }   // ★ 正式链路刚处理过，别再点一次
+    /*
+     * ⚠️⚠️ 两个必须判的（2026-10-17 他实测抓出来的，我第一版都漏了）：
+     *   ① **只认左键** —— 不加 `button === 0`，他右键呼菜单时 `mouseup` 也会走这里，
+     *      于是"右键出菜单"顺带弹一句互动台词（他说就是这个现象）。
+     *   ② **先看 `draggedHandled`** —— 正式链路跑完会把 `dragging` 置 null，
+     *      兜底紧接着看到"没有 dragging"就又点一次 ⇒ **一下被算成两下**
+     *      ⇒ 撞进双击判定 ⇒ **直接开聊天窗**（他说"未隐藏/显示之前左键点击就直接开聊天框"）。
+     */
+    if (e && e.button === 0 && typeof e.clientX === 'number' && hitPet(e.clientX, e.clientY)) {
+      const now = performance.now();
+      if (now - lastClickAt < DBL_MS) {
+        lastClickAt = 0;
+        onPetDoubleClick();
+      } else {
+        lastClickAt = now;
+        onPetClick();
+      }
+    }
+    return;
+  }
   if (draggedHandled) { draggedHandled = false; return; }   // 正式链路已经收过了
   const d = dragging;
   dragging = null;
@@ -488,33 +618,128 @@ window.addEventListener('blur', () => {
   window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
 });
 
+/**
+ * 她睡着的时候被碰 → **叫醒成坐着**（2026-10-17 他要求的）。
+ *
+ *   他的原话：「桌宠睡觉状态可以单/双击/拖动唤醒变成坐着状态，而非完全不可互动」。
+ *
+ *   ⚠️ 原来这条路是**半通**的：`rig.state.rest()` 会把她切到 idle（站着），
+ *      而 idle 是「静止池」里的一员 —— 下一拍冷却结束重骰时**可能又骰回 sleep**
+ *      （`sinceSleep` 那个守卫只管「刚睡过不能马上又睡」，睡久了就不拦了）。
+ *      所以这里显式进 `sit`，并且给一段更长的安静时间。
+ *
+ *   ⚠️⚠️ **一次点击是两个事件**（mousedown → mouseup），两个地方都会调 wakeUp：
+ *      第一次真把她叫起来了，第二次再看 `mode` 已经**不是** sleep —— 要是就这么
+ *      返回 false，`onPetClick` 那边就会走 `rig.state.rest()` 把她**又改成站着**。
+ *      实测就是这么坏的（探针量到 `sit` 瞬间变 `idle`）。
+ *      ⇒ 所以「刚叫醒」也要算数：`WOKE_MS` 之内一律返回 true，别让第二下把她按回站姿。
+ *
+ *   ⚠️ `rest()` 内部是 `enter('idle')` —— 唤醒之后**不能**再调它。调用点要按返回值分流。
+ *
+ *   ⚠️⚠️ 还有**另一层「睡」**：主进程 `review.isSleeping()`（准备睡 / 夜间那条链）。
+ *      那层页面这边改不了 —— `ui/bubble.js` 里「睡着了一个气泡都不冒」闸的就是它。
+ *      也就是说：如果他碰她的时候她正处于那一层，这里把人叫起来了也**不会冒气泡**。
+ *      那一层要不要一起改，得他定（2026-10-17 我先把能确定做对的这层做了）。
+ *
+ * @returns {boolean} 这次该不该「按叫醒处理」（真叫起来了，或者刚刚才叫起来）
+ */
+const WOKE_MS = 1200;
+let wokeAt = 0;
+
+function wakeUp() {
+  if (!rig || !rig.state) return false;
+  /*
+   * ★ 先把**主进程那层**「准备睡」叫醒（2026-10-17 加的）。
+   *
+   *   「睡」有两层，别只叫一层：
+   *     · 视觉层 = rig 的 sleep 姿态（下面这段管）
+   *     · **气泡层** = 主进程 `review.isSleeping()` —— `ui/bubble.js` 里
+   *       「睡着了一个气泡都不冒」闸的就是它，`chat:send` 还会拿它回「她睡了」
+   *   他报的 #4（完全无法互动）确认就是**她当时睡着**：
+   *   人坐起来了但不吭声，看着跟没反应一样。
+   *
+   *   ⚠️ **无条件发**、不看 `rig.state.mode` —— 那一层页面这边看不见，
+   *      问了才知道；问了没睡她也不会有副作用（review.wake() 里有 if）。
+   */
+  try { window.yachiyo.pet.wake(); } catch { /* 桥没接上就算了 */ }
+
+  const now = performance.now();
+  if (rig.state.mode === 'sleep') {
+    rig.state.enter('sit', '被叫醒');
+    rig.state.left = 20;       // ⚠️ 别用 rest()，它会把 sit 改成 idle
+    wokeAt = now;
+    return true;
+  }
+  // 刚叫醒的那一下（同一次点击的 mouseup，或者他连着又戳一下）—— 也算
+  return now - wokeAt < WOKE_MS;
+}
+
+/**
+ * ★ 单击的「Q 弹」动效（2026-10-17 他点名要的）。
+ *
+ *   做法：给 `#pet` 挂一个 260ms 的 transform 动画（压 → 弹过头 → 回位），
+ *   幅度和时长走 CSS 变量，由这里的配置实时塞进去 ——
+ *   他在「高级 → 单击互动」拖滑块就能当场看出差别，不用改 CSS。
+ *
+ *   ⚠️ `void el.offsetWidth` 那句**不能删**：连着点她时，同一个 class
+ *      第二次加是不重播的（浏览器认为没变）。强制读一次布局能把它"推"回去。
+ *   ⚠️ 动画只挂在 `#pet` 的 transform 上，**不碰 rig 的步态/呼吸**
+ *      （那套动的是画布里的像素，这个是整张图缩放，互不干扰）。
+ *   `config.cjs` 里那三行是 `clickBounce` / `clickBounceMs` / `clickBouncePct`。
+ */
+function playClickBounce() {
+  if (CFG.clickBounce === false) return;
+  const el = document.getElementById('pet');
+  if (!el) return;
+  const pct = Math.max(0, Math.min(15, Number(CFG.clickBouncePct) || 0));
+  if (!pct) return;                       // 幅度 0 = 关掉
+  const ms = Math.max(120, Math.min(600, Number(CFG.clickBounceMs) || 260));
+  el.style.setProperty('--qb', (1 - pct / 100).toFixed(3));
+  el.style.setProperty('--qb-up', (1 + pct / 100).toFixed(3));
+  el.style.setProperty('--qb-ms', ms + 'ms');
+  el.classList.remove('qbounce');
+  void el.offsetWidth;                    // ★ 见上面注释：不读一次就不重播
+  el.classList.add('qbounce');
+  clearTimeout(playClickBounce._t);
+  playClickBounce._t = setTimeout(() => el.classList.remove('qbounce'), ms + 80);
+}
+
 function onPetClick() {
   if (!rig) return;
   rig.locked = false;
-  // 点她 = **站住歇着**，不是换一个动作演给他看（2026-10-11 他报的 bug ②）
-  rig.state.rest();
+  // 睡着的时候戳她 = 叫醒（坐起来），不是「站住歇着」—— 见 wakeUp 的注释
+  const didWake = wakeUp();
+  if (!didWake) rig.state.rest();
   // ⚠️ 音效要在**做动作之前**叫 —— play() 是同步起播的，放后面的话
   //    她先站住了、隔一帧才响，听着像延迟
   playSound('click');
+  /*
+   * ★ 叫醒那一下**不弹**（2026-10-17 的取舍）：人刚坐起来，再"Q 弹"一下太闹；
+   *   而且"叫醒"本身已经有视觉变化（躺 → 坐）了，不需要再加一层。
+   *   真要改成"叫醒也弹"，把这行换成无条件的 `playClickBounce();` 就行。
+   */
+  if (!didWake) playClickBounce();
   speak(pick(['嗯？怎么啦～', '在的在的！', '呀，别戳我啦', '要聊天吗？']));
 }
 
 /**
- * 双击她 → 弹出「快速问一句」那条输入框（他 2026-10-12 的要求，参考 Coopanion）。
+ * 双击她 → **直接开聊天窗**（2026-10-17 他改的）。
  *
- * 跟右键菜单一样：窗口是**独立的**，位置要主进程拿屏幕坐标去摆，
- * 所以这里传过去的是**本窗口内**的坐标（见 main/index.cjs 的 ov:open）。
+ *   原来是弹一条 380×56 的「快速问一句」输入条（`ask.html`），问完就没了。
+ *     · 他要的：「双击不再呼出打字栏，而是直接呼出聊天框」，而且点名「优先」——
+ *       因为它顺带把 #1（聊天窗消息顺序）那条路也简化了。
+ *     · 另一条理由也站得住：那个小条**只问不记**，说过的话转头就散；
+ *       聊天窗里有历史、能往上翻。双击的意图本来就是「想跟她说句话」。
+ *
+ *   ⚠️ `ask.html` / `ui/ask.js` 和 overlay 里那个 `ask` 窗格**一起删了** ——
+ *      别只改入口：留着没人开的窗口，比没有更难查。
  */
-function onPetDoubleClick(e) {
+function onPetDoubleClick() {
   if (!rig) return;
   rig.locked = false;
-  rig.state.rest();
+  if (!wakeUp()) rig.state.rest();
   playSound('click');
-  /*
-   * ⚠️ 只传 x，y 交给 openAsk 按「她头顶」算 —— 不能直接用鼠标的 y，
-   *    他戳在脚上输入条就贴地了，那不像「从她头上冒出来」。
-   */
-  api.openAsk(e.clientX, undefined);
+  api.openChat();
 }
 
 /*
@@ -531,9 +756,16 @@ window.yachiyo.on('bubble:delta', (t) => {
   quickOn = true;
   streamBubble(quickBuf);
 });
-window.yachiyo.on('bubble:done', () => {
+window.yachiyo.on('bubble:done', (r) => {
   quickOn = false;
-  if (!quickBuf) streamBubble('……我没想好说什么。');
+  /*
+   * ★ 用主进程给的**成品**把气泡里的原文盖掉（2026-10-16 修的）。
+   *   流式推的是原文（带 `[心情 好]` 这类标记），`bubble:done` 里那份
+   *   `text` 才是 `brain.reply` 剥干净的。这个回调原来**不接参数**，
+   *   所以气泡里一直留着标记。
+   */
+  if (r && r.text) streamBubble(r.text);
+  else if (!quickBuf) streamBubble('……我没想好说什么。');
   settleBubble();          // 说完了才开始数自动关闭
   quickBuf = '';
 });
@@ -771,21 +1003,13 @@ const api = {
     hideBubble();
     window.yachiyo.ov.open('chat');
   },
-  /**
-   * 弹出「快速问一句」那条（双击她）。
-   * @param {number} x 本窗口内的坐标 —— 主进程会换算成屏幕坐标
-   * @param {number} y 同上；不传就摆在她头顶
+  /*
+   * ⚠️ 这里原来有个 `openAsk()`（弹「快速问一句」那条输入条，双击她时用）——
+   *    **2026-10-17 删了**：他要「双击不再呼出打字栏，而是直接呼出聊天框」。
+   *    连 `renderer/ask.html`、`renderer/ui/ask.js`、overlay 里那个 `ask` 窗格一起删。
+   *    ⇒ 以后要再造「一句话快问」的入口，别复活这条：它**只问不记**，
+   *      说过的话转头就散；而聊天窗有历史能往上翻。双击的落点就该是聊天窗。
    */
-  openAsk: (x, y) => {
-    hideBubble();
-    const box = stage.getBoundingClientRect();
-    const H = 56;
-    const at = {
-      x: x ?? box.left + box.width * 0.5,
-      y: y ?? Math.max(0, box.top + box.height * 0.25 - H - 10),
-    };
-    window.yachiyo.ov.open('ask', { at });
-  },
   quit:      () => window.yachiyo.win.quit(),
 };
 
@@ -833,6 +1057,21 @@ function loop(now) {
   rig.render();
   if (maskTick % 4 === 0) updateMask();
   maskTick++;
+
+  /*
+   * ★ 打游戏时把她钉在「坐着」（2026-10-17 加的）。
+   *
+   *   为什么**每帧兜一次**而不是只在事件来的时候设一次：
+   *   能改状态的地方太多了（点她 → rest()、冷却结束 → 重骰、被叫醒 → enter('sit')…），
+   *   任何一处漏判她就会溜达起来 —— 而他正全屏打着游戏，根本不会去看她。
+   *   ⇒ 这里当成**不变量**来维持：只要 `gameMode` 是真，状态不是 sit 就拉回来。
+   *   ⚠️ `left = 1e6` 是让她"这一坐永远不结束"（状态机到点会自己换动作）。
+   *   ⚠️ 只钉状态，**不碰识屏和自言自语** —— 他明确要求那两条不变。
+   */
+  if (gameMode && rig && rig.state && rig.state.mode !== 'sit') {
+    rig.state.enter('sit', '他在打游戏');
+    rig.state.left = 1e6;
+  }
 
   // ★ 每约半秒重申一次「要不要收鼠标」—— 丢了能自愈，见 reassertMouse 的注释
   reassertMouse(now);
@@ -907,8 +1146,46 @@ async function boot() {
    */
   window.addEventListener('mouseleave', () => {
     rig.mouse.on = false;
-    if (dragging) return;          // 手上还按着 —— 继续收着鼠标，别松手
-    wantInteractive(false);
+    /*
+     * ⚠️⚠️ 这里**不再**把穿透打开（2026-10-17 改的，治法见下面那条监听）。
+     *
+     *   「鼠标离开窗口」原来是页面唯一的判据。可这个窗口常年处于
+     *   `setIgnoreMouseEvents(true, {forward:true})`，而 Chromium **在那种状态下会误报
+     *   `mouseleave`** ⇒ 于是成了死循环：
+     *       收回穿透 → 误报"离开了" → 又把穿透打开 → 鼠标一动又要收回 → …
+     *   他按下鼠标的那一下，正好撞在"穿透正开着"的那一半 ⇒
+     *   **`mousedown` 被桌面接走**（真机记录：一条 down 都没有，up 却到了）
+     *   ⇒ 点她没反应、更拖不动（拖动必须有 mousedown 才能起手）。
+     *
+     *   ⇒ 打开穿透这件事改由**主进程的守望**来判（`startCursorWatch`）：
+     *      它手里有窗口矩形、也能问光标真实位置，分得清"真离开"和"假离开"。
+     */
+  });
+
+  /*
+   * 主进程说「光标出了窗口那条带」—— **这才真的**把穿透打开。
+   * 这是现在唯一的"打开穿透"来源；页面对 `mouseleave` 只切眼动，不碰穿透。
+   */
+  window.yachiyo.on('win:cursor-out', () => { wantInteractive(false); });
+
+  /*
+   * ★ 打游戏了 / 打完了（2026-10-17 加的，判定在主进程的 core/gamedetect.cjs）。
+   *
+   *   ⚠️ 这里**只记标志**，真正的"钉住坐着"在主循环里每帧兜（见那边的注释）——
+   *      因为能改状态的地方太多，事件来的时候设一次根本兜不住。
+   *   ⚠️ 挂到「打完了」就把 `left` 清零，让状态机下一拍自己重选动作：
+   *      不然她会一直坐着，得等到下次重启。
+   */
+  window.yachiyo.on('game:changed', (st) => {
+    const on = !!(st && st.on);
+    gameMode = on;
+    if (!rig || !rig.state) return;
+    if (on) {
+      rig.state.enter('sit', '他在打游戏');
+      rig.state.left = 1e6;
+    } else {
+      rig.state.left = 0;          // 放开：下一拍冷却结束就换动作
+    }
   });
 
   window.yachiyo.on('cfg:changed', ({ key, value }) => { CFG[key] = value; apply(key); });
@@ -952,8 +1229,11 @@ async function boot() {
      */
     place: (x) => { pos.x = x; clampPos(); setPos(pos.x, pos.y); },
     openChat:  () => api.openChat(),
-    /** 双击那条路的入口 —— 自检里手动叫它，别去猜双击的时间窗 */
-    openAsk:   (x, y) => api.openAsk(x, y),
+    /*
+     * ⚠️ 这里原来是 `openAsk(x, y)`（双击那条路的入口，自检手动叫它用）——
+     *    2026-10-17 跟「快速问一句」一起删了。
+     *    双击现在直接走 `openChat()`，探针要验双击就叫 `openChat()`。
+     */
     openMenu:  (x, y) => window.yachiyo.ov.open('menu', { at: { x, y } }),
     /**
      * 找一个「确定落在她身上」的窗口坐标 —— 自检点鼠标用。

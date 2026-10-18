@@ -89,14 +89,28 @@ function place() {
   let x = anchor.endsWith('l') ? px0 - bw * 0.55 : px1 - bw * 0.45;
   let y = above ? py0 - bh - gap : py1 + gap;
 
+  /*
+   * ★ 位置微调（2026-10-17 他要求的：「气泡的位置和透明度设为可调」）。
+   *   四角预设（bubbleAnchor）管**方位**，这两个偏移量管**微调** —— 他要的是能挪准，
+   *   不是再列十个预设（他明确选了"四角 + 偏移量"这个方案，理由是工作量小、bug 少）。
+   * ⚠️ 必须加在下面那段 clamp **之前** —— 否则挪出窗口的偏移量会被夹回来，
+   *    看起来就是"设了没反应"（`Math.max(8, Math.min(...))` 会吃掉它）。
+   */
+  x += Number(cfg.bubbleOffX) || 0;
+  y += Number(cfg.bubbleOffY) || 0;
+
   // 别跑出窗口
   x = Math.max(8, Math.min(x, window.innerWidth  - bw - 8));
   y = Math.max(8, Math.min(y, window.innerHeight - bh - 8));
 
   el.style.left = x + 'px';
   el.style.top  = y + 'px';
-  el.dataset.side = above ? '' : 'top';   // 气泡在她上面 → 尾巴朝下；在下面 → 尾巴朝上
-  // 尾巴永远指着她的头
+  el.dataset.side = above ? '' : 'top';
+  /*
+   * ⚠️ `--tail`（那个小三角的位置）现在**已经没有消费者了** —— 2026-10-17 他让把
+   *    气泡上的棱形去掉（原话「去掉那个棱形」），`#bubble::after` 整段删了。
+   *    这一行留着无害，但别再指望它：气泡现在就是个干净的圆角矩形。
+   */
   el.style.setProperty('--tail', Math.max(14, Math.min(px0 + 30 - x, bw - 30)) + 'px');
 }
 

@@ -67,6 +67,25 @@ function writeText(file, body, { bom = false } = {}) {
 }
 
 /**
+ * 原子写**二进制**（zip 之类）。
+ *
+ * ⚠️ 不能拿 `writeText` 凑合：它会把 body 当字符串拼 BOM，
+ *    传 Buffer 进去会被 `'…' + buf` 变成一串数字。
+ */
+function writeFile(file, buf) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, buf);
+    fs.renameSync(tmp, file);
+    return true;
+  } catch (err) {
+    console.error(`[store] 写不了 ${path.basename(file)}：${err.message}`);
+    return false;
+  }
+}
+
+/**
  * 追加一行。
  *
  * ⚠️ **追加绝不能带 BOM** —— 文件已经存在的话，BOM 会被插到**文件中间**，
@@ -75,6 +94,30 @@ function writeText(file, body, { bom = false } = {}) {
 function appendText(file, body) {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
+
+    /*
+     * ⚠️⚠️ 追加之前先看**文件末尾是不是换行**（2026-10-16 修的）。
+     *
+     *    这些 .md 库（习惯 / 梗 / 待确认）他**会自己用记事本改** ——
+     *    改完存下来很容易没有末尾换行。那新条目就会**粘在上一行屁股后面**：
+     *
+     *        原来文件：`- 熬夜`          （末尾没有 \n）
+     *        追加之后：`- 熬夜- 爱喝可乐 [2026-10-16]`
+     *
+     *    结果是**两条糊成一条**；要是上一行是注释（`> 我的备注…`），
+     *    那新条目整行会被解析器过滤掉 —— 悄没声地丢了。
+     *    读末尾那一个字节就够了，别整份读进来。
+     */
+    if (fs.existsSync(file)) {
+      const size = fs.statSync(file).size;
+      if (size > 0) {
+        const fd = fs.openSync(file, 'r');
+        const b = Buffer.alloc(1);
+        try { fs.readSync(fd, b, 0, 1, size - 1); } finally { fs.closeSync(fd); }
+        if (b[0] !== 0x0a) body = '\n' + body;
+      }
+    }
+
     fs.appendFileSync(file, body, 'utf8');
     return true;
   } catch (err) {
@@ -118,5 +161,5 @@ function size(file) {
 
 module.exports = {
   DATA, STATE, ARCHIVE,
-  ensure, readText, writeText, appendText, readJson, writeJson, mtime, size,
+  ensure, readText, writeText, writeFile, appendText, readJson, writeJson, mtime, size,
 };

@@ -34,7 +34,7 @@ function cfgMod() {
   return require('../core/config.cjs');
 }
 /** 每种浮层存不存尺寸 —— 菜单不存（高度是按内容自动收的，存了下次会裁内容） */
-const SAVE_SIZE = { menu: false, panel: true, chat: true, ask: false };
+const SAVE_SIZE = { menu: false, panel: true, chat: true };   // ⚠️ ask 已于 2026-10-17 删除（见 SPEC）
 /** 存盘去抖（毫秒）—— 拖窗口时 move/resize 事件一秒几十个，别把磁盘刷爆 */
 const SAVE_DEBOUNCE_MS = 800;
 
@@ -78,15 +78,26 @@ const SPEC = {
    *    上一轮我只把「菜单」那一项关掉了，把面板漏了 —— 而面板有 780×580，
    *    盖在别人窗口上比那个小菜单更碍事。
    */
-  panel: { w: 780, h: 580, resizable: true, minW: 620, minH: 420, top: false },
+  /*
+   * ★ `lockSize` = **用户不许拖边框改大小**（2026-10-17 他要求的）。
+   *
+   *   他报了两条：「拖动设置窗口边框会导致边框视觉闪回」（#3），
+   *   以及优化项「固定设置菜单边框，不可拖动设置边框（长宽用当前设置的值）」。
+   *
+   *   ⚠️ **不能改成 `resizable: false`** —— 见上面 menu 那段注释：Windows 上
+   *      `resizable:false` 的窗口**连代码自己 `setBounds` 都不让**，
+   *      而面板要靠这一步恢复他上次的尺寸（`winGeom.panel`，当前是 1000×730）。
+   *      所以 `resizable` 留 true（那是给**代码**用的），
+   *      用户那一侧靠 `will-resize` 里 `preventDefault()` 掐掉 —— 见 ensure()。
+   */
+  panel: { w: 780, h: 580, resizable: true, lockSize: true, minW: 620, minH: 420, top: false },
   chat:  { w: 420, h: 540, resizable: true, minW: 340, minH: 360, top: true },
   /*
-   * 快速问一句（双击她弹出来的）—— 就一条。
-   * ⚠️ 尺寸要跟 `overlay.css` 的 `.ask-card` 对齐：卡片是 `inset:0`，
-   *    高 56 配 input 34 + 上下各 11 的呼吸，正好。
-   * ⚠️ 它**不进 AUTO_FIT** —— 高度是定死的，内容永远只有一行。
+   * ⚠️ 这里原来有 `ask`（双击她弹出来的「快速问一句」那条 380×56 的输入条）——
+   *    **2026-10-17 删了**。他要求的：「双击不再呼出打字栏，而是直接呼出聊天框」。
+   *    连带的 `renderer/ask.html`、`renderer/ui/ask.js` 一起删，
+   *    双击的落点改成 `openChat()`（见 renderer/app.js 的 onPetDoubleClick）。
    */
-  ask:   { w: 380, h: 56, resizable: false, top: true },
 };
 
 /** 哪些浮层要**按内容自动收高**（见 fit()）。
@@ -139,7 +150,9 @@ function ensure(kind) {
 
   // 页面报错转出来 —— 不然浮层白屏的时候一个字都看不见
   w.webContents.on('console-message', (e) => {
-    console.log(`[${kind}] ${e.message}   (${path.basename(e.file || '?')}:${e.lineNumber})`);
+    // ⚠️ 字段名是 `sourceId` 不是 `file`（2026-10-16 修的，跟 index.cjs 同款）
+    const src = String(e.sourceId || '');
+    console.log(`[${kind}] ${e.message}   (${src ? path.basename(src.split('?')[0]) : '?'}:${e.lineNumber})`);
   });
 
   /*
@@ -163,6 +176,17 @@ function ensure(kind) {
     w.on('move', () => queueSaveGeom(w, kind));
     w.on('resize', () => queueSaveGeom(w, kind));
   }
+
+  /*
+   * ★ 不许用户拖边框改大小（2026-10-17 他要求的，理由见 SPEC 里 panel 那段注释）。
+   *
+   *    `will-resize` **只在用户拖动时**触发 —— 代码调 `setBounds` 不走它。
+   *    所以这一刀只砍用户那一侧：面板恢复上次尺寸、以后要自适应，全都照旧。
+   *
+   *    ⚠️ 他那个「拖设置窗边框 → 边框视觉闪回」的根子，就是**透明窗口被系统缩放**
+   *       那一下的重绘。尺寸根本不让改，这条 bug 就整个消失了（不用另外打补丁）。
+   */
+  if (s.lockSize) w.on('will-resize', (ev) => ev.preventDefault());
 
   // 关掉 = 藏起来（复用），真的销毁只在退出时
   w.on('close', (ev) => {
@@ -223,9 +247,25 @@ function saveGeom(w, kind) {
 
   try {
     const b = w.getBounds();
-    const g = SAVE_SIZE[kind]
-      ? { x: b.x, y: b.y, width: b.width, height: b.height }
-      : { x: b.x, y: b.y };
+    const old = getGeom(kind) || {};
+    /*
+     * ★ 锁了尺寸的窗口（`lockSize`，见 SPEC 的 panel）**只记位置、不记尺寸**。
+     *
+     *   2026-10-17 探针量出来的：每开关一次设置面板，存下来的尺寸就 **+2px**
+     *   （1000×730 → 1002×732 → 1004×734 …）。
+     *   机制是**正反馈**：`setBounds(1002)` 之后 Windows 报回来的 bounds 是 1004
+     *   （`frame:false` + `transparent` 在 DPI 125% 下那点边框补偿），
+     *   于是存 1004 → 下次设 1004 → 报 1006 …… 开上一百次面板它比屏幕还宽。
+     *
+     *   用户拖不动边框之后，尺寸本来就不该再变 —— 那就干脆别记它，
+     *   一直沿用他**最后一次能拖**时定的那个值（这正是他要的「长宽用当前设置的值」）。
+     */
+    const lock = !!(SPEC[kind] && SPEC[kind].lockSize);
+    let g;
+    if (!SAVE_SIZE[kind]) g = { x: b.x, y: b.y };
+    else if (lock && old.width) g = { x: b.x, y: b.y, width: old.width, height: old.height };
+    else g = { x: b.x, y: b.y, width: b.width, height: b.height };
+
     const all = cfgMod().get('winGeom');
     const prev = (all && typeof all === 'object' && all[kind]) || {};
     // 位置没动、尺寸也没动 → 什么都不做（否则光是开关菜单就会一直写盘）
@@ -278,7 +318,8 @@ function placeAt(w, kind, at) {
    *    摆在她头顶（见 `ask.js` 的定位），位置不是"他的选择"。
    *    它当初会被存下来，是因为我那个 `move` 监听挂得太宽（见下面 ensure() 里的注释）。
    */
-  const saved = (kind === 'menu' || kind === 'ask') ? null : getGeom(kind);
+  // ⚠️ 菜单不记位置（见 SAVE_SIZE 的注释）。ask 已于 2026-10-17 删除。
+  const saved = (kind === 'menu') ? null : getGeom(kind);
   let x, y;
 
   if (saved && saved.x != null && saved.y != null) {
@@ -527,15 +568,23 @@ function closeAll() {
 
 /** 退出时真销毁（这个走的是 app.quit，close 里的拦截要让路） */
 function destroyAll() {
+  /*
+   * ⚠️⚠️ 「正在退出」这个旗子要插在 **主窗口** 上（2026-10-16 修的）。
+   *
+   *    `ensure()` 里 `w.on('close')` 的守卫读的是 **`mainWin.__quitting`**
+   *    （见上面的 :169）—— 可**全仓没有任何地方设过它** ⇒ 那个判断恒成立，
+   *    退出时每个浮层的 close 都被 `preventDefault()` + `hide()` 拦了一道。
+   *
+   *    （原来这儿设的是 `w.__quitting = true` —— 可**没有任何地方读那个值**，
+   *      纯属白写。注释还写着「saveGeom 见了它就直接返回」，而 saveGeom
+   *      压根没看过它（它只看 SAVE_SIZE）。那句注释也是错的，一并更正。）
+   */
+  if (mainWin && !mainWin.isDestroyed()) mainWin.__quitting = true;
+
   for (const [kind, w] of wins.entries()) {
     if (w.isDestroyed()) continue;
-    /*
-     * ⚠️ 先记位置再销毁 —— 而且**必须在置 `__quitting` 之前**：
-     *    `saveGeom` 见了 `__quitting` 就直接返回（那是给「正在退出别写了」用的闸），
-     *    顺序反了最后这次位置就丢了 —— 而「拖完面板直接退出应用」正是最常见的场景。
-     */
+    // ⚠️ 先记位置再销毁 —— 「拖完面板直接退出应用」是最常见的场景，这一次不能丢
     flushGeom(w, kind);
-    w.__quitting = true;
     w.destroy();
   }
   wins.clear();

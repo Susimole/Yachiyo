@@ -331,8 +331,7 @@ html,body{
   outline:2px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset:0; border-color:var(--accent);
 }
-/* 去掉 Chromium 那对上下小箭头 —— 跟整体风格不搭，而且他要求过“不要上下钮” */
-.cwrap .num-in::-webkit-outer-spin-button,
+/* 去掉 Chromium 那对上下小箭头 —— 跟整体风格不搭，而且他要求过“不要上下钮” */.cwrap .num-in::-webkit-outer-spin-button,
 .cwrap .num-in::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
 
 /* ============================================================
@@ -619,3 +618,16 @@ html,body{
   word-break:break-all; line-height:1.35;
   font-family:Consolas,Menlo,monospace;
 }
+
+/* ============================================================
+   用量走势图（2026-10-17 加）
+   ------------------------------------------------------------------
+   柱子本身是 **SVG 手画**的（见 ui/settings.js 的 mountUsageChart），
+   这里只管外面那层框 —— 跟 `.stats` 那张卡一个调子（同样的描边、圆角、底色），
+   这样两块并排摆着不打架。
+   ============================================================ */
+.uchart{
+  border:1px solid var(--line); border-radius:12px;
+  padding:10px 12px 2px; background:var(--bg-soft);
+}
+.uchart svg{ display:block; }

@@ -129,7 +129,28 @@ function shouldSearch(text) {
   const t = String(text || '').trim();
   if (!t) return false;
   if (NO_RE.test(t)) return false;      // ⚠️ 否定优先，要在打分**之前**
+
+  /*
+   * ⚠️⚠️ 三道闸要在这儿就过（2026-10-16 加的）。
+   *
+   *    `index.cjs` 是**先调 `shouldSearch()`、再去冒「我查一下…」**的 ——
+   *    而开关 / key / 每日上限原来只在 `search()` 里面才判 ⇒
+   *    他把联网关掉了，界面上照样先弹一句「我查一下…」，
+   *    然后 `search()` 才回一句"联网关着"，前后矛盾。
+   *    实测：webEnabled=false、没 key、上限已满 —— 三种情况 `shouldSearch` 全返回 true。
+   */
+  if (cfg.get('webEnabled') === false) return false;
+  if (!cfg.get('apiKey')) return false;
+  const max = Number(cfg.get('webMaxPerDay')) || 0;
+  if (max > 0 && todayUses() >= max) return false;
+
   return score(t).total >= 2;
+}
+
+/** 今天搜过几次（跨天自动归零 —— 口径跟 `search()` 里写计数那段一致） */
+function todayUses() {
+  const s = readState();
+  return String(s.day || '') === T.day(new Date()) ? (Number(s.n) || 0) : 0;
 }
 
 /* ── 当日计数 ─────────────────────────────────────────── */

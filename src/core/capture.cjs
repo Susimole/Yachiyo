@@ -132,6 +132,14 @@ function hashOf(buf) {
  * ⚠️ 走 `powershell.exe -File`（脚本写临时文件），**不走 `-Command`** ——
  *    这东西里全是引号和 DLL 导入，塞进命令行会被转义撕碎。
  */
+/**
+ * 写 .ps1 时带的 BOM。
+ * ⚠️ PowerShell 5.1 读**不带 BOM** 的 .ps1 会按系统 ANSI 解 ——
+ *    脚本里只要出现非 ASCII（比如用户名是中文时 `C:\Users\张三\…` 那种路径）就会坏。
+ *    （2026-10-16 加的，见 foreground / gdi 两处的 writeFileSync。）
+ */
+const PS_BOM = '\uFEFF';
+
 function foreground() {
   const out = { title: '', proc: '', pid: 0, ok: false, why: '' };
   if (process.platform !== 'win32') { out.why = '只有 Windows 上有这道'; return out; }
@@ -140,15 +148,39 @@ function foreground() {
   const f = path.join(dir, 'fg.ps1');
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(f, FG_PS1, 'utf8');
+    /*
+     * ⚠️ .ps1 要**带 BOM** 写（2026-10-16 修的）。
+     *    PowerShell 5.1 读**不带 BOM** 的 .ps1 时按**系统 ANSI** 解，
+     *    而下面 gdi 那个脚本里写着 `%APPDATA%` 展开出来的**绝对路径** ——
+     *    用户名带中文的话（`C:\Users\张三\…`）路径会被解成乱码 ⇒ 截图直接失败。
+     *    （这台机器用户名是 `Susim`、纯 ASCII，所以本地走不到；
+     *      但中文用户名的中文 Windows 是常态。）
+     */
+    fs.writeFileSync(f, PS_BOM + FG_PS1, 'utf8');
     const raw = execFileSync('powershell.exe',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', f],
       { encoding: 'utf8', windowsHide: true, timeout: 15000 });
     const line = String(raw).trim().split(/\r?\n/).filter(Boolean).pop() || '';
-    const parts = line.split('|');
-    out.title = (parts[0] || '').trim();
-    out.proc = (parts[1] || '').trim();
-    out.pid = Number(parts[2]) || 0;
+
+    /*
+     * ⚠️⚠️ 从**右边**切（2026-10-16 修的）。
+     *
+     *    格式是 `标题|进程名|pid`，而**窗口标题本身可能含 `|`** ——
+     *    比如 `首页 | 哔哩哔哩 - Google Chrome`。
+     *    原来 `line.split('|')` 从左取 `parts[1]`/`parts[2]`：
+     *    实测 `"A | B|chrome|123"` → proc="B"、**pid=0**（Number("B") 是 NaN）。
+     *    pid 一错，`peeker` 里「这是不是我自己的窗口」那道守卫就失效了
+     *    （它拿 `fg.pid === ownPid` 判），提示词里的「程序」也是错的残段。
+     *
+     *    后两段（进程名 / pid）是 PS 自己生成的，**不含 `|`**，
+     *    所以从右往左切是稳的。
+     */
+    const p1 = line.lastIndexOf('|');
+    const p2 = p1 > 0 ? line.lastIndexOf('|', p1 - 1) : -1;
+    if (p2 < 0) { out.why = 'PS 回的东西认不出来：' + line.slice(0, 60); return out; }
+    out.title = line.slice(0, p2).trim();
+    out.proc  = line.slice(p2 + 1, p1).trim();
+    out.pid   = Number(line.slice(p1 + 1)) || 0;
     out.ok = true;
   } catch (err) {
     out.why = err.message;
@@ -159,6 +191,11 @@ function foreground() {
 
 /** ⚠️ 输出必须是**一行**：`标题|进程名|pid` —— 中文标题里可能有空格，所以用 `|` 分隔 */
 const FG_PS1 = `$ErrorActionPreference = 'SilentlyContinue'
+# ⚠️ 输出必须显式设成 UTF-8（2026-10-16 加的）——
+#    powershell.exe 往管道里写默认走**系统 OEM 代码页**（中文机器上是 936），
+#    而 Node 那边按 utf8 解 ⇒ 中文窗口标题全变乱码
+#    （实测：记事本 → 解出来是 "���±�"）。
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 Add-Type -MemberDefinition @'
 [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
@@ -249,7 +286,26 @@ async function electronShot() {
     });
     if (!srcs || !srcs.length) return bad('一个屏幕源都没拿到');
 
-    const img = srcs[0].thumbnail;
+    /*
+     * ⚠️⚠️ 要挑**主显示器那一份**，不能拿 `srcs[0]`（2026-10-14 修的）。
+     *
+     *    多屏时 `getSources()` 的顺序**不保证**把主屏放第一个 ——
+     *    而上面那个 `thumbnailSize` 是**按主屏算的**。
+     *    拿错源不只是「分析错屏幕」，缩略图的比例还对不上，
+     *    非主屏那份会被**拉伸**着塞进主屏的尺寸里。
+     *
+     *    `display_id` 是 Electron 给的显示器编号，跟 `screen` 那边的 `id` 对得上。
+     *    对不上就**退回第一个源**，但**必须记一笔日志** ——
+     *    悄悄的降级就是「假成功」（本机单屏，这条降级路走不到）。
+     */
+    const wantId = d.id === undefined ? null : String(d.id);
+    const picked = (wantId !== null && srcs.find((s) => String(s.display_id) === wantId)) || srcs[0];
+    if (wantId !== null && String(picked.display_id) !== wantId) {
+      log.warn('识屏', `没找到主显示器的源（主屏 id=${wantId}，拿到 ${srcs.map((s) => s.display_id).join('/')}）`
+        + ' → 退回第一个源，抓到的可能不是主屏');
+    }
+
+    const img = picked.thumbnail;
     const size = img.getSize();
     const bmp = img.getBitmap();               // BGRA
     const s = sample(bmp, size.width, size.height);
@@ -278,7 +334,7 @@ function gdi() {
 
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(ps1, gdiScript(out, MAX_W), 'utf8');
+    fs.writeFileSync(ps1, PS_BOM + gdiScript(out, MAX_W), 'utf8');   // ⚠️ BOM 见 foreground 那边的注释
     const raw = execFileSync('powershell.exe',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1],
       { encoding: 'utf8', windowsHide: true, timeout: 40000 });
@@ -309,6 +365,13 @@ function gdi() {
     return bad(err.message);
   } finally {
     try { fs.rmSync(ps1, { force: true }); } catch { /* 删不掉就算 */ }
+    /*
+     * ⚠️ **截图也要删**（2026-10-16 加的）。
+     *    `shot.jpg` 是**整屏截图** —— 里面可能有他正在看的东西。
+     *    原来它一直躺在 `%APPDATA%\Yachiyo\tmp` 里，直到下次抓屏才被覆盖。
+     *    （buffer 上面已经 `readFileSync` 进内存了，删文件不影响它。）
+     */
+    try { fs.rmSync(out, { force: true }); } catch { /* 删不掉就算 */ }
   }
 }
 

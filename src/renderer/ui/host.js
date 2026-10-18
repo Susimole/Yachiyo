@@ -21,7 +21,13 @@ import { applyFont } from './font.js';
  *    「主窗口换了字体、面板还是雅黑」这种撕裂就是这么来的。
  */
 export function applyTheme(cfg) {
-  document.body.className = cfg.theme === 'dark' ? 'dark' : 'light';
+  /*
+   * ⚠️ 用 classList.toggle，别整体赋 `className`（2026-10-16 修的）。
+   *    整体赋会把 body 上**别的类名一起抹掉**。现在 body 上只有 dark/light，
+   *    所以还没出过事 —— 但以后谁往 body 加一个类，就会被主题切换悄悄吃掉。
+   */
+  document.body.classList.toggle('dark', cfg.theme === 'dark');
+  document.body.classList.toggle('light', cfg.theme !== 'dark');
 
   // 强调色是内联变量，跟主题正交（深浅两套都可能有粉/金）
   if (cfg.accent) document.documentElement.style.setProperty('--accent', cfg.accent);

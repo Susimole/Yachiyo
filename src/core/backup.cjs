@@ -149,15 +149,24 @@ function backupChats(now = new Date()) {
     const dir = path.join(root(), '聊天记录', monthFolder(now));
     const dst = path.join(dir, `chat-${day}.jsonl`);
     const body = fs.readFileSync(rolling, 'utf8');
+    /*
+     * ⚠️ 用 `store.writeText`（先写 `.tmp` 再 rename）而不是直接 writeFileSync
+     *    （2026-10-16 修的）。
+     *
+     *    直接写最终名的话，**写到一半被杀进程 / 断电**，会留下一个
+     *    **截断的、看着像有效**的备份 —— 文件名跟好的一模一样
+     *    （`chat-2026-10-15.jsonl`），等真要用它恢复的时候才发现打不开。
+     *    实测模拟：中途崩 → 目标只剩 40 字节（正常 2690），目录里没有任何 `.tmp`。
+     */
     try {
       if (fs.readFileSync(dst, 'utf8') !== body) {
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(dst, body, 'utf8');
-        n++;
+        if (store.writeText(dst, body)) n++;
+        else log.error('备份', '抄主聊天记录：写盘失败（详情见 store 的日志）');
       }
     } catch {
-      try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(dst, body, 'utf8'); n++; }
-      catch (err) { log.error('备份', '抄主聊天记录时出错：' + err.message); }
+      // 目标还不存在（第一次备）→ 直接写
+      if (store.writeText(dst, body)) n++;
+      else log.error('备份', '抄主聊天记录：写盘失败（详情见 store 的日志）');
     }
   }
 
@@ -223,11 +232,9 @@ function backupLogs(now = new Date()) {
        */
       const body = lines.join('\n') + '\n';
       try { if (fs.readFileSync(dst, 'utf8') === body) continue; } catch { /* 没有，写 */ }
-      try {
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(dst, body, 'utf8');                   // ⚠️ 无 BOM + 裸 LF
-        n++;
-      } catch (err) { log.error('备份', `写日志备份 ${day} 时出错：${err.message}`); }
+      // ⚠️ 无 BOM + 裸 LF；`store.writeText` 顺带把目录建好、而且是原子写（2026-10-16）
+      if (store.writeText(dst, body)) n++;
+      else log.error('备份', `写日志备份 ${day} 时写盘失败`);
     }
   }
   return n;
@@ -305,7 +312,9 @@ function zipDir(zipPath, entries) {
   end.writeUInt32LE(offset, 16);
   end.writeUInt16LE(0, 20);
 
-  fs.writeFileSync(zipPath, Buffer.concat([...parts, cenBuf, end]));
+  // ⚠️ 原子写（2026-10-16 修的）—— zip 写一半崩掉的话，
+  //    那个文件看着是个完整的包，其实打不开，而且悄无声息
+  store.writeFile(zipPath, Buffer.concat([...parts, cenBuf, end]));
 }
 
 /** Node 22 的 `zlib.crc32` 不一定有 —— 没有就自己算（照 IEEE 802.3） */
@@ -393,10 +402,23 @@ function tick(now = new Date()) {
   /* ① 每天：聊天记录 + 日志 */
   if (s.lastDay !== today) {
     out.ran = true;
-    try { out.chat = backupChats(now); } catch (err) { log.error('备份', '聊天记录失败：' + err.message); }
-    try { out.logs = backupLogs(now); } catch (err) { log.error('备份', '日志失败：' + err.message); }
-    s.lastDay = today;
-    writeState(s);
+    /*
+     * ⚠️ **两步都成功才盖「今天备过了」的章**（2026-10-16 修的）。
+     *
+     *    原来是无条件 `s.lastDay = today` —— 某一步失败之后，
+     *    当天剩下的时间里系统都认为"今天已经备过了"，**当天不会再重试**。
+     *    实测：把 backupDir 指到一个被文件占住的路径 → 两步全失败、
+     *    照样写 lastDay，同日第二次 tick 直接回「今天已经备过了」。
+     */
+    let ok = true;
+    try { out.chat = backupChats(now); } catch (err) { ok = false; log.error('备份', '聊天记录失败：' + err.message); }
+    try { out.logs = backupLogs(now); } catch (err) { ok = false; log.error('备份', '日志失败：' + err.message); }
+    if (ok) {
+      s.lastDay = today;
+      writeState(s);
+    } else {
+      out.why = '有子步骤失败，今天不盖章（下一拍还会再试）';
+    }
     log.info('备份', `每日备份完成：聊天记录 ${out.chat} 份 · 日志 ${out.logs} 个日文件`);
   } else {
     out.why = '今天已经备过了';

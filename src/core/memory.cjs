@@ -39,7 +39,8 @@ function load() {
   if (!fs.existsSync(FILE)) return history;
 
   try {
-    const lines = fs.readFileSync(FILE, 'utf8').split('\n');
+    // ⚠️ 先去 BOM —— 首行带 BOM 的话那一条会被下面判成坏行、静默跳过（白丢一句）
+    const lines = fs.readFileSync(FILE, 'utf8').replace(/^﻿/, '').split('\n');
     const out = [];
     for (const ln of lines) {
       if (!ln.trim()) continue;
@@ -61,7 +62,14 @@ function push(role, content, extra = {}) {
   load();
   const rec = { role, content, ts: Date.now(), ...extra };
   history.push(rec);
-  if (history.length > MAX_TURNS * 2) history = history.slice(-MAX_TURNS);
+  /*
+   * ⚠️ 截到 `MAX_TURNS * 2`，跟 `load()` 那边**同一个常数**（2026-10-16 修的）。
+   *    原来这里写的是 `slice(-MAX_TURNS)` —— 一个「轮」一个「条」，
+   *    跑久了内存里只剩 30 条，重启之后又是 60 条，
+   *    于是学习 / 回顾 / 今日计数**长跑和重启后看到的历史不一样**。
+   *    （`recent(30)` 两边都是 30 所以看不出来，只有 `recent(200)` 那种调用方会发现。）
+   */
+  if (history.length > MAX_TURNS * 2) history = history.slice(-MAX_TURNS * 2);
 
   try {
     store.ensure();
@@ -89,13 +97,47 @@ function recent(maxTurns = MAX_TURNS) {
 
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
-    if (picked.length >= maxTurns || chars + m.content.length > MAX_CHARS) break;
+    if (picked.length >= maxTurns) break;
+
+    /*
+     * ⚠️⚠️ **最新那条不管多长都得留下**（2026-10-16 修的）。
+     *
+     *    原来一视同仁地卡字符预算：他往输入框里粘一大段日志（>12000 字），
+     *    最新那条自己就超预算 → 一条都捡不到 → `recent()` 返回**空列表**
+     *    → **请求里根本没有用户消息**，她的回答跟问题完全对不上。
+     *
+     *    所以：超预算就**截断**留下，别整条丢。截断按码点（`T.cut`），
+     *    免得把一个 emoji 劈成半个（见 text.cjs）。
+     *    ⚠️ 只对「最新这条」破例 —— 更早的还是该按预算停。
+     */
+    const room = MAX_CHARS - chars;
+    if (m.content.length > room) {
+      if (picked.length) break;                       // 已经捡到东西了，这条就算了
+      picked.unshift({ role: m.role, content: T.cut(m.content, Math.max(200, room)) });
+      break;
+    }
     picked.unshift({ role: m.role, content: m.content });
     chars += m.content.length;
   }
 
   while (picked.length && picked[0].role !== 'user') picked.shift();
   return picked;
+}
+
+/**
+ * 某个时刻**之后**的消息 —— **带 ts** 的原始记录。
+ *
+ * ⚠️ 为什么另开一个：`recent()` 返回的 `{role, content}` 是**直接喂给模型的
+ *    messages**，不敢多塞字段（有些服务端对未知字段很挑）。可回顾那条链
+ *    需要"只看今天"，那就得有 `ts`。所以这条给的是**本地用的记录**。
+ *
+ * ⚠️ 它只看**内存窗口**（`load()` 装进来的那 60 条）—— 他要是今天一口气聊了
+ *    100 句，更早的那 40 句看不到。跟改之前同一个量级，不是新引入的。
+ */
+function since(ms) {
+  load();
+  const t = Number(ms) || 0;
+  return history.filter((m) => Number(m.ts) >= t);
 }
 
 /**
@@ -111,21 +153,48 @@ function popLast(role) {
   for (let i = history.length - 1; i >= 0; i--) {
     if (!role || history[i].role === role) {
       const [gone] = history.splice(i, 1);
-      rewriteFile();
+      dropFromFile(role);
       return gone;
     }
   }
   return null;
 }
 
-/** 内存改了以后把文件重写一遍。只有「撤回」会走到这儿。 */
-function rewriteFile() {
+/**
+ * 从 `chat.jsonl` 里**只摘掉那一条**。
+ *
+ * ⚠️⚠️ 别改回「拿内存那份重写整份文件」（2026-10-15 修的，血泪）：
+ *
+ *    `history` 是**内存窗口**，不是全文 —— `load()` 只装最后 60 条（:51），
+ *    `push()` 超过 60 还会一刀砍到 30（:64）。
+ *    拿这个窗口去覆盖那个**一直在追加**的文件，等于把窗口以外的一次清光。
+ *
+ *    实测：手写 100 行 chat.jsonl → 一次聊天失败 → 文件只剩 **59** 行，
+ *    **永久丢 41 条**。而触发条件就是最平常的那几个：
+ *    key 错 / 超时 / 限流 / 他点「停止」—— 全走 brain.cjs:68 这一条。
+ *    备份模块还把这个文件当主记录，丢了就真没了。
+ *
+ *    现在：**读全文 → 只摘一条 → 原子写回**。全文一行不多、一行不少。
+ *    （`store.writeText` 是 tmp+rename，写一半崩了也不会留半截文件 ——
+ *      原来那个 `fs.writeFileSync` 直写最终名，断电就废。）
+ *
+ * ⚠️ 认「最后一个匹配 role 的行」，不是「最后一行」——
+ *    `push('user')` 之后可能还夹了别的，别想当然。
+ */
+function dropFromFile(role) {
   try {
     store.ensure();
-    const body = history.map((m) => JSON.stringify(m)).join('\n');
-    fs.writeFileSync(FILE, body ? body + '\n' : '', 'utf8');
+    if (!fs.existsSync(FILE)) return;
+
+    const lines = fs.readFileSync(FILE, 'utf8').split('\n').filter((s) => s.trim());
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let o;
+      try { o = JSON.parse(lines[i]); } catch { continue; }   // 坏行跳过，不让它挡路
+      if (!role || o.role === role) { lines.splice(i, 1); break; }
+    }
+    store.writeText(FILE, lines.length ? lines.join('\n') + '\n' : '');
   } catch (err) {
-    console.error('[memory] 历史重写失败：' + err.message);
+    console.error('[memory] 撤销那一句写盘失败：' + err.message);
   }
 }
 
@@ -326,7 +395,7 @@ function readLastExit() {
 
 module.exports = {
   FILE, FILE_SESSION, FILE_SPOKEN, MAX_TURNS,
-  load, push, popLast, recent, todayCount, lastSeen, count, clear,
+  load, push, popLast, recent, since, todayCount, lastSeen, count, clear,
   saveSession, readSession, buildSessionBlock,
   addSpoken, readSpoken, recentSpoken, buildSpokenBlock,
   timeSense, saveLastExit, readLastExit,

@@ -21,6 +21,8 @@ const cfg = require('./config.cjs');
 const store = require('./store.cjs');
 const T = require('./text.cjs');
 const { listForPrompt } = require('./habits.cjs');
+const usage = require('./usage.cjs');
+const provider = require('./provider.cjs');
 
 const FILE = path.join(store.DATA, 'profile.md');
 
@@ -141,16 +143,37 @@ async function rewrite({ chat, cfg: c, recent = '' }) {
   }
 
   const prev = read() || '（还没有，这是第一版）';
+  /*
+   * ⚠️⚠️ 替换值一定要包成**函数**（2026-10-16 修的）。
+   *
+   *    `String.replace(找什么, 换成什么)` 里，第二参是字符串时
+   *    `$&` `$'` `` $` `` `$1` 这些是**特殊序列**，会被展开。
+   *    他聊到钱、或者正文里带个 `$&`，提示词当场被撑坏 ——
+   *    实测 `$&` 会变成"整个匹配到的那段模板"。
+   *
+   *    包成 `() => 值` 之后当**字面量**处理，一个字符都不会被解释。
+   */
   const body = PROMPT
-    .replace('{prev}', prev)
-    .replace('{habits}', habits.length ? habits.map((h) => `- ${h}`).join('\n') : '（还没有）')
-    .replace('{recent}', recent.trim() || '（没有记录）');
+    .replace('{prev}', () => prev)
+    .replace('{habits}', () => (habits.length ? habits.map((h) => `- ${h}`).join('\n') : '（还没有）'))
+    .replace('{recent}', () => (recent.trim() || '（没有记录）'));
 
   const out = await chat({
     base: c.apiBase, key: c.apiKey, model: c.model,
     messages: [{ role: 'user', content: body }],
     thinking: c.thinking, reasoningEffort: c.thinkingDepth, temperature: c.temperature,
   });
+
+  /*
+   * ⚠️ 记账（2026-10-16 补的）—— 跟 learn.cjs 那边同款。
+   *    改写画像也是一次真花钱的调用，原来 `out.usage` 丢掉了，
+   *    「用量与成本」和「花超了提醒我」都因此偏。
+   */
+  try {
+    usage.add(out.usage, provider.cost(out.usage, {
+      in: c.priceIn, out: c.priceOut, hit: c.priceCacheHit,
+    }));
+  } catch { /* 记不上账不该拦住画像 */ }
 
   let text = String(out.text || '').trim();
 

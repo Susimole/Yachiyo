@@ -90,6 +90,16 @@ function askLate(now = new Date()) {
   }
   s.lateDay = T.day(now);
   s.lateAt = T.stamp(now);
+  /*
+   * ★★ 记的是**截止时刻**（毫秒），不是"用过一次"的记号（2026-10-16 修的）。
+   *
+   *    原来只记 `lateDay`，然后由 `consumeLate()` 在下一拍把它删掉 ——
+   *    于是"再等 30 分钟"实际只等到了**下一拍（5 秒）**：
+   *    心跳 5 秒一拍，下一拍 `consumeLate()` 返回 false，
+   *    流程直接落到"留晚安 + 退出"。他听到的是"她说了再等一会儿，然后秒退"。
+   *    实测：`LATE_MINUTES`(30) 全仓只出现在日志和返回串里，**没有任何地方读它当截止**。
+   */
+  s.lateUntil = now.getTime() + LATE_MINUTES * 60000;
   writeState(s);
   log.info('自动关闭', `她说想晚点关 —— 那就再等 ${LATE_MINUTES} 分钟（今天那次用掉了）`);
   return { ok: true, why: '' };
@@ -101,18 +111,16 @@ function lateUsedToday(now = new Date()) {
 }
 
 /**
- * 今天这次延时要生效吗？
+ * 今天这次延时的**截止时刻**（毫秒）。没设过 / 不是今天的 → 0。
  *
- * ⚠️ **消费式**：返回 true 的同时把标记清掉。
- *    不清的话每一拍都返回 true，就永远关不掉了 —— 旧工程专门为这个写过注释。
+ * ⚠️ 为什么不能只看 `lateUsedToday()`：那是"今天延过没有"，
+ *    30 分钟过完了它**还是 true** —— 拿它当闸就永远关不掉了。
+ *    要判"还没到点"必须比时刻。
  */
-function consumeLate(now = new Date()) {
-  if (!lateUsedToday(now)) return false;
+function lateDeadline(now = new Date()) {
   const s = readState();
-  delete s.lateDay;
-  delete s.lateAt;
-  writeState(s);
-  return true;
+  if (String(s.lateDay || '') !== T.day(now)) return 0;    // 不是今天的，作废
+  return Number(s.lateUntil) || 0;
 }
 
 /* ── 晚安（按心情挑一句）─────────────────────────────── */
@@ -173,8 +181,12 @@ function tick(idleMin, now = new Date()) {
   // ★ 闸③：回顾没跑完不许关（他标了「切记切记」）
   try { if (hooks.reviewBusy && hooks.reviewBusy()) return '回顾还在跑（不关）'; } catch { }
 
-  // ★ 闸④：她说想晚点关 —— 消费掉那一次，然后往后推
-  if (consumeLate(now)) return `她说晚点关，再等 ${LATE_MINUTES} 分钟`;
+  // ★ 闸④：她说想晚点关 —— 到点之前都别关
+  const until = lateDeadline(now);
+  if (until && now.getTime() < until) {
+    const left = Math.max(1, Math.ceil((until - now.getTime()) / 60000));
+    return `她说晚点关，还有 ${left} 分钟`;
+  }
 
   // 留晚安（只留一次）
   if (!byeSaid) {
@@ -228,7 +240,7 @@ const BYE_WINDOW_MS = 8000;
 
 module.exports = {
   FILE, SAW_ACTIVE_MINUTES, LATE_MINUTES,
-  attach, tick, byeText, askLate, lateUsedToday, consumeLate,
+  attach, tick, byeText, askLate, lateUsedToday, lateDeadline,
   sawUserActive: () => sawUserActive,
   /**
    * 现在这句是不是"正在说晚安" —— 给主进程的 `sayIt` 放行用。

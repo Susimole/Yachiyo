@@ -30,12 +30,36 @@ const MIME = {
 };
 
 const server = http.createServer((req, res) => {
-  let rel = decodeURIComponent((req.url || '/').split('?')[0]);
+  /*
+   * ⚠️ `decodeURIComponent` 是会**抛**的（2026-10-17 修的，清单 #49）。
+   *    请求里只要有非法的百分号转义（比如 `/%`），它当场抛 URIError ——
+   *    而这里原来没有 try/catch ⇒ **整个进程直接死**。
+   *    实测改前：`curl --path-as-is .../%` → 服务器没了（HTTP 000），
+   *    之后连正常页面也一起打不开。
+   *    这是开发用的小服务器，但"随手访问一个怪 URL 就整个挂掉"太脆了。
+   */
+  let rel;
+  try {
+    rel = decodeURIComponent((req.url || '/').split('?')[0]);
+  } catch {
+    res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }).end('400 路径里的转义不合法');
+    return;
+  }
   if (rel === '/' || rel === '') rel = '/index.html';
 
-  // 只允许读 ROOT 里面的东西
+  /*
+   * 只允许读 ROOT 里面的东西。
+   *
+   * ⚠️ 判据要带上**路径分隔符**（2026-10-17 修的，清单 #49）：
+   *    原来写的是 `full.startsWith(ROOT)` —— 于是 `…\src\renderer-x\…`
+   *    这种**同级的兄弟目录**也会被当成"在 ROOT 里面"放行
+   *    （`renderer` 恰好是 `renderer-x` 的前缀）。
+   *    现在 `src/` 下没有别的同级目录，所以今天利用不了 —— 但这是真漏洞，
+   *    哪天有人加个 `src/renderer-dev/` 就自动漏了。
+   */
   const full = path.normalize(path.join(ROOT, rel));
-  if (!full.startsWith(ROOT)) {
+  const rootWithSep = ROOT.endsWith(path.sep) ? ROOT : ROOT + path.sep;
+  if (!full.startsWith(rootWithSep)) {
     res.writeHead(403).end('403');
     return;
   }

@@ -69,7 +69,19 @@ function read() {
 /** 今天已经改了几次（按 `记录` 里今天的条数算） */
 function changesToday(now = new Date()) {
   const d = T.day(now);
-  return read().记录.filter((r) => r && String(r.t || '').startsWith(d)).length;
+  /*
+   * ⚠️ **回落不算**（2026-10-16 修的）。
+   *
+   *    回落是**系统按时间自动淡回去**的（见 `decay()`），不是"她今天心情变了一次"。
+   *    它自己在下限检查里是被排除的（:100 那句 `o.from !== '回落'`），
+   *    可**计数时又把它算进去了** —— 两边口径不一致。
+   *
+   *    实测：`set(对话)` → 回落 → `set(对话)`，changesToday 就是 3；
+   *    第四次真变化被拦「今天已经变过 3 次了，压住」——
+   *    而他实际只看到 2 次变化。有过回落的那天，真实变化只能发生 2 次。
+   */
+  return read().记录.filter((r) => r && r.哪条 !== '回落'
+    && String(r.t || '').startsWith(d)).length;
 }
 
 /**

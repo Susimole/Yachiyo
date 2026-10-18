@@ -133,14 +133,38 @@ async function readTable(code) {
  *   正解看**匹配位置**：`北京` 在 index 0、`朝阳` 在 index 3 ——
  *   **出现得更靠后的那个才是他真正说的**（更靠后 = 更具体）。
  *   位置也一样时，才退回「名字更长」。
+ *
+ * ⚠️⚠️ 但"位置靠后"不能是**第一位**（2026-10-16 改的）。
+ *
+ *    原实现是 `i > best.i` 优先、长度只当平局替补 —— 而上面那段注释
+ *    白纸黑字写的是「最长匹配」，两者根本不是一回事。
+ *
+ *    实测踩到的：`"青海省海南州"` 里 `青海` 在 0、`海南` 在 3，
+ *    按"更靠后"就挑中了**海南** —— 可这里挑的是**省**，
+ *    而 `海南州` 是青海省下面的自治州，不是海南省。
+ *    结果拿着"海南"去海南的市表里找"海南州"，当然找不到。
+ *
+ *    现在的口径，**按优先级往下比**：
+ *      ① 名字更长（`黑龙江` > `龙江` 这种）
+ *      ② 后面跟着 `省 / 自(治区) / 特(别行政区)` 的赢 —— 那是"这是省份"的
+ *         明确标记；后面跟着 `州 / 市 / 区 / 县` 的，说明它是**下一级**单位，
+ *         不该当选省份
+ *      ③ 还平手才比出现位置 —— 保住"北京朝阳 → 朝阳"那条本来就是对的行为
  */
 function pickIn(list, text) {
+  const score = (ch) => (ch === '省' || ch === '自' || ch === '特' ? 2 : 0)
+    - (/[州市区县]/.test(ch) ? 1 : 0);
+
   let best = null;
   for (const it of list) {
     const i = text.indexOf(it.name);
     if (i < 0) continue;
-    if (!best || i > best.i || (i === best.i && it.name.length > best.it.name.length)) {
-      best = { it, i };
+    const cand = { it, i, len: it.name.length, sc: score(text[i + it.name.length] || '') };
+    if (!best
+      || cand.len > best.len
+      || (cand.len === best.len && cand.sc > best.sc)
+      || (cand.len === best.len && cand.sc === best.sc && i > best.i)) {
+      best = cand;
     }
   }
   return best ? best.it : null;
@@ -383,6 +407,25 @@ let nextTryAt = 0;         // 早于这个时间不再发请求（失败退避�
 let lastWhy = '';
 
 /**
+ * 这次失败能不能拿 `lastGood` 兜底？
+ *
+ * ⚠️⚠️ **必须跟本次请求是同一个城市、同一个单位**（2026-10-16 修的）。
+ *
+ *    原来三处失败返回都只判"有没有旧数据"（`if (lastGood)`）——
+ *    他要是把城市改成个打错的名字再点「查一下」：解析失败，
+ *    返回给你的却是**上一个城市**的天气，而界面上显示的是新城市，
+ *    **看着像查成功了**。单位同理（切成 ℉ 之后还回一份带 ℃ 的）。
+ *    实测：城市从「郴州」改成「这个城市不存在XYZ」→ 返回的文本首行还是「【郴州的天气】」。
+ *
+ *    对不上就返回 null —— 让调用方老实报"没查到"，别拿旧的糊弄。
+ */
+function fallbackFor(cityText, unit) {
+  if (!lastGood) return null;
+  if (lastGood.city !== cityText || lastGood.unit !== unit) return null;
+  return { ok: true, text: lastGood.text, data: lastGood.data, why: '', cached: true };
+}
+
+/**
  * 拿一份天气（能等就等一下）。
  *
  * @param {object} [o]
@@ -407,7 +450,8 @@ async function fetchWeather(o = {}) {
 
   if (!o.force && Date.now() < nextTryAt) {
     // 退避期内 —— 有旧的用旧的，没有就老实说
-    if (lastGood) return { ok: true, text: lastGood.text, data: lastGood.data, why: '', cached: true };
+    const fb = fallbackFor(cityText, unit);
+    if (fb) return fb;
     return { ok: false, text: '', data: null, why: lastWhy || '刚才没查到，等一会儿再试', cached: false };
   }
 
@@ -422,7 +466,8 @@ async function fetchWeather(o = {}) {
         //    以前失败也按天退避，一次网络抖动就让那一整天都没有天气
         nextTryAt = Date.now() + 5 * 60000;
         lastWhy = r.why;
-        if (lastGood) return { ok: true, text: lastGood.text, data: lastGood.data, why: '', cached: true };
+        const fb = fallbackFor(cityText, unit);
+        if (fb) return fb;
         return { ok: false, text: '', data: null, why: r.why, cached: false };
       }
       const text = format(r.data);
@@ -433,7 +478,8 @@ async function fetchWeather(o = {}) {
     } catch (err) {
       nextTryAt = Date.now() + 5 * 60000;
       lastWhy = err.message;
-      if (lastGood) return { ok: true, text: lastGood.text, data: lastGood.data, why: '', cached: true };
+      const fb = fallbackFor(cityText, unit);
+      if (fb) return fb;
       return { ok: false, text: '', data: null, why: err.message, cached: false };
     } finally {
       inflight = null;
@@ -453,7 +499,19 @@ function cachedText() {
 
 /* ── 提示词那一块 ───────────────────────────────────────── */
 
-const ASK_RE = /天气|气温|温度|下雨|会不会雨|下雪|冷|热|穿什么|带伞|空气质量|雾霾|多少度/;
+/*
+ * ⚠️⚠️ `冷` / `热` **不能裸放**（2026-10-16 修的）。
+ *
+ *    原来就是裸的 `冷|热` —— 实测 `isAsking('好热闹')` 是 **true**，
+ *    「好热情」「好冷清」「这个游戏好热闹啊」也全中。
+ *    命中的后果不小：`index.cjs` 那边会**真去联网查一次天气**，
+ *    而且回复前最多等 5 秒（`Promise.race` 封顶）。
+ *
+ *    改法：`冷` / `热` 后面**紧跟这些字**的，说明它是在组词、不是在说天气
+ *    —— 用否定前瞻排掉。这是个**黑名单**，遇到新的误伤词往里加就行。
+ *    （想彻底解决得上分词，那是另一个量级的事。）
+ */
+const ASK_RE = /天气|气温|温度|下雨|会不会雨|下雪|[冷热](?!闹|情|清|淡|笑|门|心|血|战|身|烈|潮|度|漠|静|却|酷)|穿什么|带伞|空气质量|雾霾|多少度/;
 
 /** 他这句话是不是在问天气/在聊外面 */
 function isAsking(text) {
@@ -490,6 +548,8 @@ function _reset() {
 
 module.exports = {
   resolveCity, fetchNow, fetchWeather, cachedText, buildBlock, isAsking,
+  /** ⚠️ 导出**只为自检** —— `resolveCity` 要联网拉表，测不了纯的匹配口径 */
+  _pickIn: (list, text) => pickIn(list, text),
   format, field, toId,
   _state, _reset,
 };

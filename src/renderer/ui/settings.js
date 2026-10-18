@@ -225,6 +225,14 @@ export const PAGES = [
       { title:'位置', rows:[
         { t:'seg', key:'bubbleAnchor', label:'气泡固定点', hint:'气泡挂在她哪个角',
           opts:[['tl','左上'],['tr','右上'],['bl','左下'],['br','右下']] },
+        /*
+         * ★ 位置微调（2026-10-17 他要求的：气泡位置可调）。
+         *   他选的是「四角预设 + 偏移量」—— 工作量小、bug 少。
+         *   ⚠️ 偏移在 `ui/bubble.js` 的 `place()` 里是**加在窗口 clamp 之前**的，
+         *      所以往窗口外推会被夹回来，这是刻意的（不让她把气泡挪到看不见的地方）。
+         */
+        R('bubbleOffX','左右偏移', -300, 300, 1, v => (v > 0 ? '+' : '') + v + 'px'),
+        R('bubbleOffY','上下偏移', -300, 300, 1, v => (v > 0 ? '+' : '') + v + 'px'),
         R('bubbleW','宽度', 120, 520, 2, v => v + 'px'),
         R('bubbleH','最大高度', 0, 600, 10, v => v ? v + 'px' : '自动'),
       ]},
@@ -265,6 +273,18 @@ export const PAGES = [
     desc:'AI接口、消耗查询以及部分参数设置栏，默认预设DeepSeek',
     groups:[
       { title:'连接', rows:[
+        /*
+         * ★ 服务商预设那一排 chip（2026-10-17 加的，稿子见 留痕\稿子-批次C\）。
+         *
+         *   每个平台**各自存一份**地址/Key/模型；切换 = 把那份**写回 config**
+         *   （见 core/providers.cjs 顶上那段 —— 就因为这个设计，
+         *    provider/peeker/profile/websearch 那些读 config 的模块一行都不用改）。
+         *
+         *   ⚠️ 它是 `custom` 行，**下面那三行（地址/模型/Key）一个字没动** ——
+         *      这样 R() 里那套「输入框 oninput → cfg.set」的现成机制照旧管用，
+         *      不用给它们另写一套保存逻辑。
+         */
+        { t:'custom', key:'providerPick', label:'服务商' },
         { t:'text', key:'apiBase', label:'接口地址', ph:'https://api.deepseek.com' },
         /*
          * ⚠️ 2026-10-12 他说的：「模型接入那里选择模型项需要有一个检测模型按钮，
@@ -351,6 +371,13 @@ export const PAGES = [
       ]},
       // ★ 「记忆与情绪」这块 2026-10-12 搬到「高级」页去了（他要求的）
       { title:'用量与成本', rows:[
+        /*
+         * ★ 花费走势图（2026-10-17 加的）。
+         *   粒度是他定的：日 = 近 **24 小时**（按小时）· 周 = 近 **7 天** · 月 = 近 **30 天**。
+         *   数据来自账本新加的两个桶（见 core/usage.cjs 的 hourly / daily + series()）。
+         * ⚠️ 放在统计卡**前面** —— 先看走势，再看那四个数字（稿子就是这么排的）。
+         */
+        { t:'custom', key:'usageChart' },
         { t:'custom', key:'usageStats' },
         // ⚠️ 他明确要求过：「数值滑块改为输入框」—— 单价是要精确填的数，
         //    滑块一格 0.1 拖不出 2.37 这种值。
@@ -376,6 +403,25 @@ export const PAGES = [
     k:'adv', icon:'gear', name:'高级', title:'高级',
     desc:'调试用的，没事别动',
     groups:[
+      /*
+       * ★ 单击互动（2026-10-17 他要求：Q 弹动效的开关/时长/幅度放**高级**页）。
+       * ⚠️ 三个参数都只影响 `#pet` 的 transform，不碰 rig 的步态/呼吸。
+       */
+      { title:'单击互动', rows:[
+        { t:'sw', key:'clickBounce', label:'Q 弹动效', hint:'点她时压一下再弹回来' },
+        R('clickBounceMs','弹多久', 120, 600, 10, v => v + ' ms'),
+        R('clickBouncePct','弹多狠', 0, 15, 1, v => v + '%'),
+      ]},
+      /*
+       * ★ 打游戏时（2026-10-17 他要求的：游戏时保持坐着，识屏和自言自语不变）。
+       *   ⚠️ 检测方式是**全屏 + 进程**两条一起看，见 `core/gamedetect.cjs`。
+       *      全屏放视频（浏览器/播放器）不算游戏 —— 那有默认排除名单，改 `gameExclude` 就行。
+       *   ⚠️ 这里只给一个开关；排除名单在 config 里（`gameExclude`，null = 用默认表）。
+       */
+      { title:'打游戏时', rows:[
+        { t:'sw', key:'gameDetect', label:'保持坐着',
+          hint:'全屏游戏时她原地坐着，不乱走' },
+      ]},
       { title:'性能', rows:[
         R('fpsLimit','帧率上限', 0, 144, 5, v => v ? v + ' fps' : '跟随屏幕'),
       ]},
@@ -540,6 +586,8 @@ export function ALL_GROUPS() {
  *    留着是为了以后真要加时有个现成位置。
  */
 const MOUNTS = {
+  providerPick: (el) => mountProviderPick(el),
+  usageChart: (el) => mountUsageChart(el),
   usageStats: (el) => mountUsage(el),
   aiDebug: (el) => mountAiDebug(el),
   weatherTest: (el) => mountWeatherTest(el),
@@ -819,6 +867,231 @@ async function mountUsage(cell) {
   usagePaint = () => paint(null);
   try { paint(await window.yachiyo.usage.get()); }
   catch { cell.innerHTML = '<span class="kv">账本读不出来。</span>'; }
+}
+
+/* ============================================================
+   AI 服务商预设（2026-10-17 加，稿子见 留痕\稿子-批次C\稿A2-*.png）
+   ============================================================ */
+
+/** 这一页当下的状态：当前是哪个预设、它那份值 */
+const provState = { active: '', item: null };
+let provSyncArmed = false;
+
+/** 转义 —— 自定义预设的名字是他手输的，直接拼进 innerHTML 不稳 */
+const te = (s) => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/** 按左栏文字找那一行的输入框（面板里的行没有 id，只能这么找） */
+function inputOf(labelStart) {
+  const row = [...document.querySelectorAll('#pMain .row')]
+    .find((r) => ((r.querySelector('.label') || {}).textContent || '').startsWith(labelStart));
+  return row ? row.querySelector('input') : null;
+}
+
+/** 把地址 / 模型 / Key 三行刷成某个预设的值（⚠️ 找不到那一行就跳过，不抛） */
+function fillApiRows(item) {
+  if (!item) return;
+  const put = (kw, v) => { const i = inputOf(kw); if (i && i.value !== (v ?? '')) i.value = v ?? ''; };
+  put('接口地址', item.base);
+  put('模型', item.model);
+  put('API Key', item.key);
+}
+
+/**
+ * ★ 他在那三行里改了东西 → **顺手写进当前预设**。
+ *
+ *   挂 `input` 而不是 `change`：change 要**失焦**才触发，
+ *   他改完地址**直接去点另一个服务商** —— change 永远不会来，那一改当场丢。
+ *
+ *   ⚠️ 只注册一次（模块级）：`showPage` 每次重画都会调一次挂载函数，
+ *      监听要是在那儿挂，切十次页就有十个监听一起跑。
+ */
+function armProviderSync() {
+  if (provSyncArmed) return;
+  provSyncArmed = true;
+  document.addEventListener('input', (e) => {
+    const inp = e.target;
+    if (!inp || inp.tagName !== 'INPUT' || !provState.active) return;
+    const lab = (inp.closest('.row')?.querySelector('.label')?.textContent) || '';
+    let patch = null;
+    if (lab.startsWith('接口地址')) patch = { base: inp.value };
+    else if (lab.startsWith('API Key')) patch = { key: inp.value };
+    else if (lab.startsWith('模型')) patch = { model: inp.value };
+    if (!patch) return;
+    window.yachiyo.providers.save(provState.active, patch).catch(() => {});
+  });
+}
+
+async function mountProviderPick(cell) {
+  let list = { active: '', items: [] };
+  try { list = await window.yachiyo.providers.list(); }
+  catch { cell.innerHTML = '<span class="kv">预设读不出来。</span>'; return; }
+
+  /** 切完预设之后统一做的一件事：把页面手里的 CFG 和下面三行对齐 */
+  const follow = (item) => {
+    if (!item) return;
+    /*
+     * ⚠️ 主进程那边的 config 变了，可**页面手里这份 CFG 还是旧的** ——
+     *    所以不能拿 api.cfg() 去刷下面三行，得用刚拿到的这份。
+     */
+    Object.assign(api.cfg(), { apiBase: item.base || '', apiKey: item.key || '', model: item.model || '' });
+    fillApiRows(item);
+  };
+
+  const paint = () => {
+    const cur = list.items.find((x) => x.id === list.active) || null;
+    provState.active = list.active;
+    provState.item = cur;
+
+    const chips = list.items.map((p) =>
+      `<button type="button" class="btn${p.id === list.active ? ' primary' : ''}" data-pid="${te(p.id)}">${te(p.name)}</button>`
+    ).join('');
+    /*
+     * ⚠️ 按钮之间的间距用 `.cwrap`（它自带 `gap:10px`），**别再内联 `gap`** ——
+     *    他 2026-10-17 看过截图说「服务商的按钮中间要有一点间距」，
+     *    第一版塞在 `.mrow-top` 里（那层是给「按钮 + 说明文字」用的），间距被挤没了。
+     * ⚠️ 那行「某某 —— 它自己的地址 / Key / 模型，切回来还在」的说明**去掉了**：
+     *    他明确说「服务商项不用备注」。行为靠按钮高亮 + 下面三行跟着变就能看出来。
+     */
+    cell.innerHTML =
+      `<div class="cwrap">${chips}<button type="button" class="btn" data-padd="1">+ 自定义</button>` +
+      `${cur && !cur.builtin ? '<button type="button" class="btn" data-pdel="1">删除</button>' : ''}</div>`;
+
+    cell.querySelectorAll('[data-pid]').forEach((b) => {
+      b.onclick = async () => {
+        if (b.dataset.pid === list.active) return;
+        const r = await window.yachiyo.providers.activate(b.dataset.pid);
+        if (!r.ok) return;
+        follow(r.item);
+        list = await window.yachiyo.providers.list();
+        paint();
+      };
+    });
+
+    const addBtn = cell.querySelector('[data-padd]');
+    if (addBtn) {
+      addBtn.onclick = () => {
+        /*
+         * ⚠️ 别用 window.prompt —— Electron 里它被禁掉了（返回 null + 控制台报错），
+         *    他点一下会「什么都没发生」。就地变一个输入框出来。
+         */
+        addBtn.outerHTML = '<input type="text" data-pname="1" placeholder="服务商名字，回车确定">';
+        const inp = cell.querySelector('[data-pname]');
+        if (!inp) return;
+        inp.focus();
+        inp.onkeydown = async (e) => {
+          if (e.key === 'Escape') { paint(); return; }
+          if (e.key !== 'Enter') return;
+          const name = inp.value.trim();
+          if (!name) { paint(); return; }
+          const r = await window.yachiyo.providers.add(name);
+          if (!r.ok) { paint(); return; }
+          await window.yachiyo.providers.activate(r.id);
+          list = await window.yachiyo.providers.list();
+          follow(list.items.find((x) => x.id === r.id));
+          paint();
+        };
+      };
+    }
+
+    const delBtn = cell.querySelector('[data-pdel]');
+    if (delBtn) {
+      delBtn.onclick = async () => {
+        const r = await window.yachiyo.providers.remove(list.active);
+        if (!r.ok) return;
+        list = await window.yachiyo.providers.list();
+        follow(list.items.find((x) => x.id === list.active));
+        paint();
+      };
+    }
+  };
+
+  armProviderSync();
+  paint();
+  /*
+   * ⚠️ 下面那三行**不是**这个挂载函数建的（它们是 R() 建的），所以这里主动对一次账：
+   *    万一页面手里的 CFG 跟预设不一致（比如刚从别处切过预设），先把三行刷成预设里的值。
+   */
+  follow(list.items.find((x) => x.id === list.active));
+}
+
+/* ---------- 用量走势图（2026-10-17 加）---------- */
+
+let usageChartPaint = null;
+
+async function mountUsageChart(cell) {
+  let range = 'day';
+  let data = null;
+  const money = (n) => { const { sym, div } = curInfo(api.cfg()); return sym + (Number(n || 0) / div).toFixed(2); };
+
+  /**
+   * 手画柱状图。
+   * ⚠️ **不引任何图表库** —— 引了就要跟着进 dist、跟着 Electron 升级，不值当；
+   *    就这么几根柱子，SVG 手写比配一个库便宜。
+   */
+  const chart = () => {
+    const P = data.points;
+    const W = 640; const H = 128; const PAD = 16;
+    const n = P.length;
+    const BW = n > 20 ? 14 : n > 10 ? 20 : 54;
+    const gap = (W - PAD * 2 - BW * n) / Math.max(1, n - 1);
+    const max = Math.max(data.peak, 1e-9);
+    let bars = '';
+    P.forEach((p, i) => {
+      const h = Math.max(2, Math.round((p.cost / max) * (H - 34)));
+      const x = PAD + i * (BW + gap);
+      const y = H - 22 - h;
+      const isNow = i === n - 1;                       // 最后一格 = 现在（今天 / 这一小时）
+      bars += `<rect x="${x.toFixed(1)}" y="${y}" width="${BW}" height="${h}" rx="${Math.min(4, BW / 3)}"` +
+        ` fill="var(--accent)" opacity="${isNow ? 1 : 0.42}"></rect>`;
+      if (isNow && p.cost > 0) {
+        bars += `<text x="${(x + BW / 2).toFixed(1)}" y="${(y - 5).toFixed(1)}" font-size="10.5"` +
+          ` text-anchor="middle" fill="var(--accent)">${te(money(p.cost))}</text>`;
+      }
+      // 横轴只标首 / 中 / 尾 —— 24 格全标会挤成一坨
+      if (i === 0 || i === n - 1 || (n > 10 && i === Math.floor(n / 2))) {
+        bars += `<text x="${(x + BW / 2).toFixed(1)}" y="${H - 6}" font-size="10"` +
+          ` text-anchor="middle" fill="var(--sub)">${te(p.label)}</text>`;
+      }
+    });
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">` +
+      `<line x1="${PAD}" y1="${H - 22}" x2="${W - PAD}" y2="${H - 22}" stroke="var(--line)" stroke-width="1"></line>` +
+      `${bars}</svg>`;
+  };
+
+  const paint = () => {
+    if (!data) return;
+    const seg = [['day', '日'], ['week', '周'], ['month', '月']]
+      .map(([k, t]) => `<button class="btn${k === range ? ' primary' : ''}" data-range="${k}">${t}</button>`).join('');
+    const tip = { day: '近 24 小时 · 按小时', week: '近 7 天 · 按天', month: '近 30 天 · 按天' }[range];
+    const unit = range === 'day' ? '时' : '天';
+    /*
+     * ⚠️⚠️ 自己带一层 `flex-direction:column` —— 别指望外面的容器。
+     *    挂载进来的这一格，布局取决于那一行**有没有 label**
+     *    （有 label 才是 `.body.stack`＝竖排；没 label 就落进 `.row .body` ＝**横排**）。
+     *    第一版没带，结果「三种粒度」和「图表」被摆成了左右两列、峰值跑到图右边
+     *    —— 实测截图一眼就看出来了。
+     * ⚠️ 提示行也并成一条放**底下**：放在按钮旁边会被挤得换行，看着乱。
+     */
+    cell.innerHTML =
+      `<div style="display:flex; flex-direction:column; gap:8px; width:100%">
+         <div class="mrow-top"><div class="cwrap">${seg}</div></div>
+         <div class="uchart">${chart()}</div>
+         <div class="kv">${tip} · 合计 ${te(money(data.sum.cost))} · 峰值 ${te(money(data.peak))} · 平均 ${te(money(data.sum.cost / Math.max(1, data.points.length)))}/${unit}</div>
+       </div>`;
+    cell.querySelectorAll('[data-range]').forEach((b) => {
+      b.onclick = async () => { range = b.dataset.range; await load(); };
+    });
+  };
+
+  const load = async () => {
+    try { data = await window.yachiyo.usage.series(range); }
+    catch { cell.innerHTML = '<span class="kv">走势图读不出来。</span>'; return; }
+    paint();
+  };
+
+  usageChartPaint = () => paint();     // 切 ¥/$ 时也要重画（跟统计卡一样）
+  await load();
 }
 
 /**
@@ -1193,7 +1466,7 @@ export function initSettings() {
     // 主题/强调色变了 → 整页重画（样式变量是内联的，不重画会有一半是旧的）
     if (k === 'theme' || k === 'accent') { showPage(curPage); return; }
     // ¥/$ 和汇率变了 → 只重画用量卡上的金额（其余一个字不用动）
-    if (k === 'currency' || k === 'usdRate') { usagePaint?.(); return; }
+    if (k === 'currency' || k === 'usdRate') { usagePaint?.(); usageChartPaint?.(); return; }
     /*
      * 模型名是从别处改的 → 把「模型」那一行的输入框同步过来。
      * ⚠️ 不能 `showPage('ai')` 重画整页 —— 那样刚检测出来的模型清单就被抹了。
@@ -1232,8 +1505,17 @@ export function initSettings() {
    *
    * 读完之后 `design.js` 自己会重新跑一遍装饰（见那边的 `__designAttach`），
    * 所以这里 fire-and-forget 就行，不用 await。
+   *
+   * ⚠️⚠️ 但**正式版里不许跑**（2026-10-16 修的）——
+   *    这一行原来没有 `DEV()` 判断，是**唯一**一条绕过守卫的进口：
+   *    文件头写着「正式版里 `design.js` 连加载都不加载」，
+   *    按钮（:1161）和 devOnly 的组（:1284）都挡了，
+   *    偏偏这里没挡 ⇒ 面板一打开就动态 import 它、读 design.json、按里面的覆盖改界面。
+   *    实测：打包版里 `design.js` 确实在，而且真的会被加载。
    */
-  import('./design.js').then((m) => m.preload && m.preload()).catch(() => { /* 读不到就算了 */ });
+  if (DEV()) {
+    import('./design.js').then((m) => m.preload && m.preload()).catch(() => { /* 读不到就算了 */ });
+  }
 }
 
 bootSettings();

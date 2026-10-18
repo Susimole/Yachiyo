@@ -75,6 +75,42 @@ const DEFAULTS = {
    */
   edgePauseSeconds: 1.4,
   activity: 100,         // 20–300 %
+  /*
+   * 眼动跟随的「有效期」（秒）—— 只在他**刚跟她互动过**的这一段时间里，她才追鼠标。
+   *
+   * ⚠️ 2026-10-17 他报的：「桌宠眼动跟随是全局生效，改为互动点击互动后的 15 秒内
+   *    可跟随（可配置时长）」。
+   *
+   *    原来那道闸只有 `rig.js` 里的 `canGaze`（「她歇着 + 鼠标在画面里」）——
+   *    可主窗口是**整屏宽、贴屏幕底部的一条**（见 main/index.cjs 的 placeWindow），
+   *    鼠标在那一条里随便哪儿动，她都在追。他手一挪到屏幕右下角，她的眼珠就跟着转，
+   *    看着像被遥控；而且她本来只是自己在那儿站着，不该一直盯着鼠标看。
+   *    ⇒ 现在再加一道：**互动过（按她/拖她/双击/右键她）之后的 N 秒内才跟**。
+   *
+   *    0 = 关掉跟随（她只看正前方）。
+   */
+  gazeFollowSec: 15,
+  /*
+   * ★ 单击互动的「Q 弹」动效（2026-10-17 他点名要的，参数放「高级」页）。
+   *   `clickBounce`     开/关（怕他嫌它跳）
+   *   `clickBounceMs`   时长，120–600ms
+   *   `clickBouncePct`  幅度（%），0–15 —— 3 是"几乎看不出来"，10 以上就有点夸张了
+   *   ⚠️ 只在他**主动点她**时触发：拖动、双击、睡着时被叫醒都不弹
+   *      （拖动时整块缩放会跟"跟着鼠标走"打架；双击是要开聊天窗，不该先弹一下）。
+   */
+  clickBounce: true,
+  clickBounceMs: 260,
+  clickBouncePct: 6,
+  /*
+   * ★ 打游戏时保持坐着（2026-10-17 他定的：**全屏检测 + 进程检测**，「这样更准」）。
+   *   `gameDetect`  开/关
+   *   `gameExclude` 「就算全屏也不当游戏」的进程名（小写，前缀匹配）
+   *                  ⚠️ `null` = 用 `core/gamedetect.cjs` 里的默认表
+   *                     （浏览器、播放器、编辑器、远控……全屏放视频不该让她坐着）
+   *   ⚠️ 只影响「她走不走动」。识屏和自言自语**不动** —— 那是他明确要求的。
+   */
+  gameDetect: true,
+  gameExclude: null,
 
   /* ---------- 说话 ---------- */
   sound: true,
@@ -118,6 +154,16 @@ const DEFAULTS = {
   bubbleH: 180,          // 0 = 自动
   bubbleAlpha: 92,
   bubbleAnchor: 'tl',    // 气泡挂在她哪个角：tl/tr 在上方，bl/br 在下方
+  /*
+   * ★ 气泡位置**微调**（2026-10-17 他加的：「气泡的位置和透明度设为可调」）。
+   *   四角预设管方位，这两个管微调 —— 他明确选了「四角 + 偏移量」这个方案
+   *   （原话「a（工作量小，bug少）」），不是要十个预设、也不是要拿鼠标拖着跑。
+   *   ⚠️ 单位 px，范围给他 ±300。
+   *   ⚠️ 偏移**加在窗口 clamp 之前**（见 ui/bubble.js 的 place()）——
+   *      加在后面会被夹回窗口内，表现就是"设了没反应"。
+   */
+  bubbleOffX: 0,
+  bubbleOffY: 0,
   bubbleTextColor: '#1B1A1E',
   bubbleFontSize: 13.5,
   bubbleSeconds: 8,
@@ -352,7 +398,20 @@ const DEFAULTS = {
   logLevel: 'info',
 
   /* ---------- 通用 ---------- */
-  autostart: true,
+  /*
+   * ⚠️ 默认 **false**（2026-10-16 改的，原来是 true）。
+   *
+   *    `autostart.sync()` **每次启动都跑**，而它只看这个键 ——
+   *    默认 true 等于「第一次运行就悄悄往 `HKCU\...\Run` 写一条」，
+   *    他根本没点过设置面板里那个开关。
+   *    而 `autostart.cjs` 的文件头明写着「**只在用户同意后**」——
+   *    默认值跟这条规矩本来就是矛盾的。
+   *
+   *    ⚠️ 改默认值**不会动已经存过的配置**：他这份 `config.json` 里
+   *      `autostart` 是显式写着的，所以他的自启行为一个字节都不变；
+   *      受影响的只是「全新安装、还没碰过设置」那种情况。
+   */
+  autostart: false,
   theme: 'light',        // light | dark
   accent: '#0A7EA4',
   /*
@@ -376,9 +435,35 @@ function ensureDir() {
   }
 }
 
+/**
+ * 递归拷一份（只处理普通对象和数组，别的原样返回）。
+ * ⚠️ 给 `merge()` 用 —— 它必须**深拷**（不然默认值和配置会共用同一个对象），
+ *    见那边的注释。
+ */
+function deepCopy(v) {
+  if (Array.isArray(v)) return v.map(deepCopy);
+  if (v && typeof v === 'object') {
+    const o = {};
+    for (const k of Object.keys(v)) o[k] = deepCopy(v[k]);
+    return o;
+  }
+  return v;
+}
+
 /** 用默认值补全缺项（老配置升级上来时不会缺字段），但不覆盖用户改过的值 */
 function merge(base, over) {
-  const out = { ...base };
+  /*
+   * ⚠️ 先**深拷**一份 base（2026-10-16 修的）。
+   *
+   *    原来写的是 `{ ...base }` —— 只拷一层。像 `winGeom` 这种对象，
+   *    DEFAULTS 里那份和返回值里那份**是同一个引用**：
+   *    后面谁就地改 `cfg.winGeom.x`，等于把 DEFAULTS 也改了，
+   *    连 `reset()` 之后都还带着脏值。实测 `DEFAULTS.winGeom === cfg.all().winGeom`
+   *    就是 true。
+   *
+   *    目前 overlay 写之前会自己拷一份副本，所以还没发作 —— 属于埋着的雷。
+   */
+  const out = deepCopy(base);
   for (const k of Object.keys(over || {})) {
     const v = over[k];
     if (v && typeof v === 'object' && !Array.isArray(v) &&
@@ -401,7 +486,19 @@ function load() {
     return cfg;
   }
   try {
-    cfg = merge(DEFAULTS, JSON.parse(fs.readFileSync(FILE, 'utf8')));
+    /*
+     * ⚠️⚠️ 读之前**先去 BOM**（2026-10-15 修的）。
+     *
+     *    他要是拿记事本之类存成「UTF-8 带 BOM」，JSON.parse 会当场抛错 ——
+     *    下面那条 catch 就把整份配置当"读坏了"、写回默认值，
+     *    ⇒ **apiKey 和全部设置一起没**。实测过。
+     *    `store.readText()` 一直就是这么干的（store.cjs:45），这里当初漏了。
+     *
+     * ⚠️ 别改成 `require('./store.cjs')` 来复用 —— store **反过来** require 了
+     *    本文件，那是循环依赖，正是清单 #1 栽的那种坑（先加载的一方拿到空对象）。
+     *    就一行 `.replace()`，值不得冒那个险。
+     */
+    cfg = merge(DEFAULTS, JSON.parse(fs.readFileSync(FILE, 'utf8').replace(/^﻿/, '')));
   } catch (err) {
     const bad = path.join(DIR, `config.bad-${Date.now()}.json`);
     try { fs.copyFileSync(FILE, bad); } catch {}

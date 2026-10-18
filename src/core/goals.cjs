@@ -53,8 +53,15 @@ function readAll() {
 
 function writeAll(o) { return store.writeJson(FILE, o); }
 
+/*
+ * ⚠️ 秒级时间戳**不够**（2026-10-16 修的）—— 同一秒加两条会撞 ID，
+ *    之后按 id 去改状态就改到错的那条上（跟 heritems.cjs 的 stampId 同一个坑）。
+ *    补毫秒 + 进程内自增序号。
+ */
+let idSeq = 0;
 function stamp(now = new Date()) {
-  return `${T.day(now).replace(/-/g, '')}${T.pad2(now.getHours())}${T.pad2(now.getMinutes())}${T.pad2(now.getSeconds())}`;
+  const base = `${T.day(now).replace(/-/g, '')}${T.pad2(now.getHours())}${T.pad2(now.getMinutes())}${T.pad2(now.getSeconds())}`;
+  return `${base}${String(now.getMilliseconds()).padStart(3, '0')}${String(++idSeq % 1000).padStart(3, '0')}`;
 }
 
 /* ── 加一条 ─────────────────────────────────────────────── */

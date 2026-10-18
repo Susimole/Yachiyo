@@ -175,10 +175,26 @@ function isLikelySame(a, b, minTh = 0.85, maxTh = 0.7) {
   return { same: best.min >= minTh && best.max >= maxTh, min: best.min, max: best.max, via: best.via };
 }
 
-/** 截断，超了补一个省略号。`n` 是**字符数**（中文一个字算一个） */
+/**
+ * 按**码点**截前 n 个（不补省略号）。
+ *
+ * ⚠️⚠️ 别用 `.slice(0, n)`（2026-10-16 修的）—— 那是按 UTF-16 **码元**切的，
+ *    `.length` 数的也是码元。emoji 是**代理对**（两个码元一个字），
+ *    切在中间就剩半个，屏幕上显示成一个 `�`。
+ *    实测：`('x'.repeat(39) + '😀').slice(0, 40)` 末位是 `U+D83D` —— 半个 emoji。
+ *    用在「情绪原因截 40 字」和「自言自语截 200 字」这两处，
+ *    正文里带个表情就会当场穿帮。
+ */
+function cut(s, n) {
+  const t = String(s == null ? '' : s);
+  const cp = [...t];               // 展开成码点数组，代理对算一个
+  return cp.length > n ? cp.slice(0, n).join('') : t;
+}
+
+/** 截断，超了补一个省略号。`n` 是**字数**（中文一个字算一个，emoji 也算一个） */
 function clip(s, n, tail = '…') {
   const t = String(s == null ? '' : s);
-  return t.length > n ? t.slice(0, n) + tail : t;
+  return [...t].length > n ? cut(t, n) + tail : t;
 }
 
 /**
@@ -240,7 +256,7 @@ function daysBetween(a, b) {
 
 module.exports = {
   CRLF, GAP, EMPTY_SLOT,
-  gramSet, similarity, clip, stripEmptySlots, toCRLF,
+  gramSet, similarity, clip, cut, stripEmptySlots, toCRLF,
   pad2, day, stamp, stampMin, parseStamp, daysBetween,
   // ★ 去重专用（先剃公共头尾，再要求两边都够像），见上面的长注释
   similarityBoth, stripSharedEnds, isLikelySame,

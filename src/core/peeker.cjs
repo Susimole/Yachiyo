@@ -32,7 +32,29 @@ const store = require('./store.cjs');
 const T = require('./text.cjs');
 const capture = require('./capture.cjs');
 const provider = require('./provider.cjs');
-const prompt = require('./prompt.cjs');
+/*
+ * ⚠️⚠️ **循环依赖：顶层这个引用【不能信】**（2026-10-17 修的，清单 #1）。
+ *
+ *    `prompt.cjs` 末尾是 `module.exports = {…}` —— **整体替换**导出对象。
+ *    真实启动顺序是 index.cjs → brain.cjs → prompt.cjs → peeker.cjs：
+ *    prompt 走到它第 41 行来 require 我们，我们又在这里 require 回去 ——
+ *    此时 prompt 还没执行到末尾那句，**返回的是个空对象 {}**，
+ *    而且绑在 `const` 上，后面永远不会自己更新。
+ *
+ *    后果不是「少一块提示词」，是**整条链静默死亡**：
+ *    `prompt.timeBlock is not a function` 每次都抛在 buildSystem 里，
+ *    被 look() 的 catch 吞掉只留一行日志 —— 而截图、前台窗口、
+ *    今日次数（screenMaxPerDay）**早就都做完了**，白扣。
+ *
+ *    留这个顶层 require 是为了让「先加载 peeker」那条路照常走
+ *    （那种顺序下 prompt 是完整的）；**用到的时候必须重新取一次**。
+ *    prompt.cjs 那边早就这么干了（它的 `peekerMod()`），这里是对称的另一半。
+ */
+const promptTop = require('./prompt.cjs');
+/** ⚠️ 循环依赖下不能信顶层那个引用 —— 每次现取 */
+function promptMod() {
+  try { return require('./prompt.cjs'); } catch { return promptTop || {}; }
+}
 const usage = require('./usage.cjs');
 const markers = require('./markers.cjs');
 const log = require('./log.cjs');
@@ -292,15 +314,24 @@ async function look(now = new Date()) {
  */
 function buildSystem(fg, key, now) {
   const parts = [];
-  try { parts.push(prompt.personaBlock()); } catch { /* 人格坏了也不能空着走，下面还有时间 */ }
-  parts.push(prompt.timeBlock(now));
+  /*
+   * ⚠️ 这两句以前**只有 personaBlock 在 try 里**，`timeBlock` 在外头：
+   *    循环依赖一发作就是它先炸，整条 buildSystem 直接挂掉（清单 #1）。
+   *    现在两句都在 try 里 —— 真取不到也只是少一块，不至于让整次识屏作废。
+   */
   try {
-    const b = prompt.buildSystem({ userText: key, chain: 'screen' });
+    const p = promptMod();
+    parts.push(p.personaBlock());
+    parts.push(p.timeBlock(now));
+  } catch { /* 人格/时间坏了也不能空着走，下面还有记忆块 */ }
+  try {
+    const p = promptMod();
+    const b = p.buildSystem({ userText: key, chain: 'screen' });
     // ⚠️ 上面那个已经含人格和时间了，这里只要**记忆那几块** ——
     //    整份塞进去会重复。做法：把人格和时间那两段从结果里去掉。
     const trimmed = b
-      .replace(prompt.personaBlock(), '')
-      .replace(prompt.timeBlock(now), '')
+      .replace(p.personaBlock(), '')
+      .replace(p.timeBlock(now), '')
       .trim();
     if (trimmed) parts.push(trimmed);
   } catch { /* 记忆块坏了不该让整次识屏作废 */ }

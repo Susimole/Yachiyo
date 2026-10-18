@@ -88,7 +88,20 @@ function markToday(now = new Date()) {
  * @returns {{text:string, userLines:number}}
  */
 function buildMaterial(now = new Date()) {
-  const turns = memory.recent(MATERIAL_TURNS);
+  /*
+   * ⚠️⚠️ 只取**今天**的（2026-10-16 修的）。
+   *
+   *    原来用的是 `memory.recent(MATERIAL_TURNS)` —— 它只按条数截，**完全不看日期**。
+   *    于是他 3 天前聊过 2 句以上、今天一句没说，闸门④（"今天没聊过就跳过"）
+   *    照样放行，接着就拿**几天前的旧聊天**去生成"今天的担心 / 心情 / 认错"——
+   *    凭空编出没发生过的经历。那正是闸门④本来要防的事。
+   *
+   *    ⚠️ 走 `memory.since()` 而不是 `recent()`：后者返回的是要直接喂模型的
+   *      `{role, content}`，**没有 ts**，根本没法按日期筛。
+   */
+  const dayStart = new Date(now);
+  dayStart.setHours(0, 0, 0, 0);
+  const turns = memory.since(dayStart.getTime());
 
   // 从最新往回捡，捡到够数为止，最后**正过来**（旧工程也是这么拼的）
   const lines = [];
@@ -342,6 +355,25 @@ function tick(idleMin) {
   }
 
   // ⑤ 发起
+  /*
+   * ⚠️ **没填 Key 就先别标记今天**（2026-10-16 修的）。
+   *
+   *    `markToday()` 在后面，而 `run()` 一看没 key 就 `return null` ——
+   *    于是今天的回顾就这么被吃掉了：他稍后把 key 填好，**当天也不会再回顾**。
+   *    实测过（补上 key 后再 tick 仍然返回「准备睡中」）。
+   *
+   *    ⚠️ 也不能"没 Key 就什么都不做" —— 心跳 5 秒一拍，
+   *      那样会每一拍喊一句把日志刷爆。所以借 `sleepMode` 当"这轮安静了"的旗子：
+   *      他回来动一下鼠标，gate ② 会把它清掉，下一轮再提醒一次。
+   */
+  if (!cfg.all().apiKey) {
+    if (!sleepMode) {
+      sleepMode = true;
+      log.warn('回顾', '没有 API Key，回顾发不出去 —— 今天先不标记，等你填好');
+    }
+    return '没 Key，先不回顾（不标记）';
+  }
+
   log.info('回顾', `键鼠停了 ${idleMin.toFixed(1)} 分钟（门槛 ${need}）→ 发起回顾`);
   markToday();
   sleepMode = true;

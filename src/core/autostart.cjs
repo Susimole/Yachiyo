@@ -117,8 +117,37 @@ function sync(enabled, appDir) {
   const want = command(appDir);
   const cur = read();
   if (cur === want) return { ok: true, why: '已经是对的' };
+
+  /*
+   * ⚠️ 值不一样时，要分清「这条是**我们自己写的旧路径**」还是「他手动加的」
+   *    （2026-10-16 修的）。
+   *
+   *    原来一律落进"不是我们写的，不碰"那一支 ⇒ **挪了目录也永远不修**：
+   *      ① 他先 `npm start` → 写进去的是 `electron.exe D:\AI_work\Git`
+   *      ② 之后装打包版 → want 变成 `Yachiyo.exe <安装目录>`，而旧的 cur 还在
+   *      ③ ⇒ 开机启的还是**旧路径**，而文件头写的却是"挪了目录会自动补上"。
+   *    （这台机器的注册表现在就正好是那个开发版路径，实测过。）
+   *
+   *    认领的判据：整条里出现过**我们的可执行文件名**。
+   *    ⚠️ 认领之后才覆盖；真不是我们的一律不碰 —— 文件头那条规矩没变。
+   */
+  if (cur && isOurs(cur)) {
+    const r = set(true, appDir);
+    if (r.ok) log.info('自启', `发现旧路径，已改成：${want}`);
+    return r;
+  }
   if (cur) return { ok: true, why: '注册表里那条不是我们写的，不碰' };
   return set(true, appDir);
+}
+
+/**
+ * 注册表里那一条是不是**我们自己写的**。
+ * ⚠️ 键名（`YachiyoPet`）本来就是我们专用的，但值是**可以被手改成任意东西**的 ——
+ *    所以按"里面有没有我们的可执行文件"来认，不认键名。
+ */
+function isOurs(value) {
+  const v = String(value || '').toLowerCase();
+  return v.includes('yachiyo.exe') || v.includes('electron.exe');
 }
 
 module.exports = { RUN_KEY, RUN_NAME, command, read, set, sync, _isDev: () => !!process.defaultApp };

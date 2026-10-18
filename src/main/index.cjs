@@ -44,8 +44,40 @@ const autostart = require('../core/autostart.cjs');
 const websearch = require('../core/websearch.cjs');
 const capture = require('../core/capture.cjs');
 const peeker  = require('../core/peeker.cjs');
+/*
+ * ★ 游戏检测（2026-10-17 加的）：全屏 + 进程两条一起看，见 core/gamedetect.cjs 顶上那段。
+ * ⚠️ 它只负责"判断"，不碰她的状态 —— 判断结果通过 `game:changed` 广播给页面，
+ *    由页面自己决定"坐着还是照常走动"（状态机只有一个主人，别两头改）。
+ */
+const gamedetect = require('../core/gamedetect.cjs');
+/*
+ * AI 服务商预设（2026-10-17 加的）。
+ * ⚠️ 它**不接管**任何读取方 —— 切预设只是把那份值写回 config，
+ *    provider/peeker/profile/websearch 照样读 config（见 providers.cjs 顶上那段）。
+ */
+const providers = require('../core/providers.cjs');
 const trayMod  = require('./tray.cjs');
 const overlay  = require('./overlay.cjs');
+
+/**
+ * 挂一个**只给探针用**的 IPC 口 —— 打包版里**根本不注册**。
+ *
+ * ⚠️⚠️ 为什么要有这个（2026-10-14 加的）：
+ *    `probe:sleep` / `ov:probe-raise` / `ov:probe-bounds` 三个口原来都是
+ *    **无条件注册**的 —— preload 那边虽然给 `_probe` / `_sleep` 加了 DEV 闸，
+ *    可 `probeRaise` / `probeBounds` 漏在闸外面，正式版里照样调得到
+ *    （实测：打包版的 preload.cjs 里就搜得到这两个名字）。
+ *    ⇒ **两侧一起挡**：这边不注册，那边不暴露，漏一个都还留着口子。
+ *
+ * ⚠️ 判据必须用**主进程这边的** `app.isPackaged` ——
+ *    preload 跑在沙箱里没有 `app`（见 preload.cjs 文件头那段血泪）。
+ *
+ * 用法：`devOnly(() => ipcMain.handle('probe:xxx', ...))`
+ */
+function devOnly(fn) {
+  if (app.isPackaged) return;
+  fn();
+}
 
 /**
  * ⚠️ Electron 默认把 `userData` 放在 `%APPDATA%\Yachiyo\` —— 跟我们的
@@ -147,6 +179,46 @@ function resizeStage() {
   return box;
 }
 
+/**
+ * ★★ 光标守望：**出了窗口那条带就通知页面把穿透打开**（2026-10-17 加的）。
+ *
+ *   治的是他报的：「托盘隐藏后再显示，就点不动她 / 拖不动她」。
+ *   真机记录（`_dsh020\verify\arm-record.cjs`）抓到了确凿证据：
+ *   **`mousedown` 一条都没进页面，`mouseup` 却进来了** ——
+ *   说明按下那一刻窗口还在穿透，IPC 五十来毫秒后把穿透收回来，松开正好赶上。
+ *
+ *   为什么会"每次"都撞上：页面里 `mouseleave` 一响就把穿透打开，而
+ *   **穿透状态下 Chromium 会误报 `mouseleave`** ⇒ 「收回 → 误报离开 → 又打开」死循环。
+ *   页面自己分不清"真离开"和"穿透状态下的假离开"——**但主进程分得清**，
+ *   它手里有窗口矩形、也能问光标真实位置。
+ *
+ *   ⚠️ 这里的做法是**只通知、不直接改穿透**：
+ *      改穿透的唯一控制点仍然是页面（`wantInteractive` / `reassertMouse`），
+ *      两边都改会互相打架（页面每 500ms 重申一次，会把主进程的改动顶回去）。
+ *   ⚠️ 只在**从内到外**那一下发一次，不是每 120ms 都发（省 IPC、也好读日志）。
+ */
+let cursorWatch = null;
+let cursorWasInside = null;
+function startCursorWatch() {
+  if (cursorWatch) return;
+  cursorWatch = setInterval(() => {
+    if (!win || win.isDestroyed() || !win.isVisible()) return;
+    try {
+      const b = win.getBounds();
+      const p = screen.getCursorScreenPoint();
+      const inside = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+      if (inside === cursorWasInside) return;
+      cursorWasInside = inside;
+      if (!inside) {
+        // 光标出了那条带 ⇒ 桌面必须点得动 ⇒ 让页面把穿透打开
+        win.webContents.send('win:cursor-out');
+      }
+      // ⚠️ 光标**进来**时什么都不做：收不收回由页面的 hitPet 决定（她走动了就不该收）
+    } catch { /* 窗口正在销毁，下一秒就没了 */ }
+  }, 120);
+  if (typeof cursorWatch.unref === 'function') cursorWatch.unref();
+}
+
 function createWindow() {
   const box = placeWindow();
 
@@ -190,6 +262,28 @@ function createWindow() {
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   win.setIgnoreMouseEvents(true, { forward: true });
 
+  /*
+   * ⚠️⚠️ **这里千万不要再补 `setIgnoreMouseEvents`** —— 2026-10-17 血的教训。
+   *
+   *   我曾经因为「隐藏后再唤出就点不动她」在这里加了一句保险：
+   *       win.on('show', () => win.setIgnoreMouseEvents(true, { forward: true }));
+   *   **结果它自己就是元凶**：show 之后窗口被设成"忽略鼠标"，而页面那边
+   *   `wantMouse` 仍然是 `true`（它早就认为该收回了）⇒ `wantInteractive(true)`
+   *   被「状态没变就别发 IPC」那道闸挡住 ⇒ **再也不发** ⇒ 窗口一直忽略鼠标。
+   *
+   *   真机记录（`_dsh020\verify\arm-record.cjs`，他亲手点的）证据：
+   *     隐藏/显示**之前**：PTR-down ✓ WD-down ✓ CVS-down ✓ 全在
+   *     隐藏/显示**之后**：只有 WD-up，**一条 down 都没有**
+   *   （up 能到是因为 `forward:true` 在忽略状态下仍会转发一部分消息。）
+   *   ⇒ 表现就是他说的「点不动、更拖不动」（拖动必须有 mousedown 才能起手）。
+   *
+   *   ⇒ **结论：穿透只有一个控制点 —— 页面那边的 `wantInteractive` / `reassertMouse`。**
+   *      主进程这边别再私自改它。一改就跟页面的 `wantMouse` 失配，而且页面**不会知道**。
+   *
+   *   ★ 现在"光标离开窗口就打开穿透"这件事，交给 `startCursorWatch()`：
+   *     它**只发事件**通知页面（`win:cursor-out`），由页面去调，控制点仍然唯一。
+   */
+
   // 告诉 overlay「主窗口是哪一个」—— 广播要发给它一份（见文件末尾那段注释：
   // 这行曾经写在模块作用域里，那时 win 还是 null）
   overlay.attach(win);
@@ -201,7 +295,15 @@ function createWindow() {
   // 把页面的 console 转到主进程 —— 不然页面报错一个字都看不见
   // ⚠️ Electron 44 起是对象式回调；旧的位置参数写法会刷一屏 deprecation 警告
   win.webContents.on('console-message', (e) => {
-    const file = e.file ? path.basename(e.file) : '?';
+    /*
+     * ⚠️ 字段名是 **`sourceId`**，不是 `file`（2026-10-16 修的）。
+     *    Electron 44 的 `WebContentsConsoleMessageEventParams` 只有
+     *    `{ message, level, lineNumber, sourceId, frame }` ——
+     *    读 `e.file` 永远是 undefined，文件名那一栏**恒显示 `?`**，白查。
+     *    它是完整 URL（`file:///D:/…/app.js`），basename 一下就够看。
+     */
+    const src = String(e.sourceId || '');
+    const file = src ? path.basename(src.split('?')[0]) : '?';
     const line = `[renderer] ${e.message}   (${file}:${e.lineNumber})`;
     console.log(line);
     plog(line);
@@ -214,7 +316,18 @@ function createWindow() {
     plog(`[crash] 渲染进程没了：${d.reason} (exitCode=${d.exitCode})`);
   });
 
-  win.once('ready-to-show', () => win.show());
+  /*
+   * ⚠️⚠️ 启动时**要认已保存的 `petVisible`**（2026-10-16 修的）。
+   *
+   *    原来是无条件 `win.show()`。于是他上次把她隐藏了、重启之后
+   *    **她自己又冒出来**，而托盘菜单上写的还是「显示八千代」
+   *    （托盘是按 `cfg.petVisible` 画的，跟实际相反）。
+   *    点一下反而把她藏起来，**要点两下才回来**。
+   */
+  win.once('ready-to-show', () => {
+    if (cfg.get('petVisible') === false) return;    // 他上次是藏起来的，别自己冒出来
+    win.show();
+  });
   win.on('closed', () => { win = null; });
 }
 
@@ -375,14 +488,28 @@ function writeDesign(data) {
   }
 }
 
-ipcMain.handle('design:load', () => readDesign());
-ipcMain.handle('design:put', (_e, data) => writeDesign(data && typeof data === 'object' ? data : {}));
-ipcMain.handle('design:clear', () => {
+/*
+ * ⚠️⚠️ 调试台这一族 IPC 口**只在开发版注册**（2026-10-16 补的）。
+ *
+ *    它们是 2026-10-13 做调试台那批加的，当时**漏了这道闸** ——
+ *    打包版里也注册着，而 preload 那边同样照样暴露
+ *    （`designLoad/Put/Clear/Where/Save` 原来摆在 DEV 块**外面**）。
+ *
+ *    `design:put` 是个**写文件的通道**，产品流程一次都不调它
+ *    （调试台在正式版压根不该出现）。跟 `probe:sleep` 那几个一个道理，套上闸。
+ */
+function designClear() {
   plog('[调试台] design:clear —— 覆盖文件被清掉了（「全部还原」走这条）');
   try { fs.rmSync(DESIGN_FILE(), { force: true }); } catch { /* 本来就没有 */ }
   return { ok: true };
+}
+
+devOnly(() => {
+  ipcMain.handle('design:load', () => readDesign());
+  ipcMain.handle('design:put', (_e, data) => writeDesign(data && typeof data === 'object' ? data : {}));
+  ipcMain.handle('design:clear', designClear);
+  ipcMain.handle('design:where', () => DESIGN_FILE());
 });
-ipcMain.handle('design:where', () => DESIGN_FILE());
 
 /**
  * 界面调试台「保存成文件」—— 存到桌面，存完**在资源管理器里高亮它**。
@@ -398,7 +525,7 @@ ipcMain.handle('design:where', () => DESIGN_FILE());
  * ⚠️ 走 `dialog.showSaveDialog` 而不是硬写死路径 —— 他可能想存到别处。
  *    默认文件名带时间戳，连着导几次不会互相覆盖。
  */
-ipcMain.handle('design:save', async (_e, text) => {
+async function designSave(_e, text) {
   const s = String(text == null ? '' : text);
   if (!s) return { ok: false, why: '没有内容' };
   const stamp = (() => {
@@ -421,7 +548,10 @@ ipcMain.handle('design:save', async (_e, text) => {
     plog('[调试台] 保存失败：' + err.message);
     return { ok: false, why: err.message };
   }
-});
+}
+
+// ⚠️ 同样只在开发版注册 —— 见上面 design:load 那一族的注释
+devOnly(() => ipcMain.handle('design:save', designSave));
 
 /**
  * ★ **只给探针用**：把「准备睡」掰过去 / 回来。
@@ -434,14 +564,14 @@ ipcMain.handle('design:save', async (_e, text) => {
  * ⚠️ 产品流程一次都不调它 —— 真实进出走心跳里的 `review.tick()`。
  *    跟 `ov:probe-raise` 是同一类东西：**为了不改产品代码就能量到真实行为**。
  */
-ipcMain.handle('probe:sleep', (_e, on) => {
+devOnly(() => ipcMain.handle('probe:sleep', (_e, on) => {
   // `on` 给 null 就是**纯查询**，不改状态（探针要分开问"设成功没"和"现在什么状态"）
   if (on === null || on === undefined) return review.isSleeping();
   review._setSleeping(!!on);
   // 立刻把状态推给页面 —— 不然要等下一拍心跳（5 秒）才生效，探针得干等
   overlay.broadcast('sleep:changed', review.isSleeping());
   return review.isSleeping();
-});
+}));
 
 /**
  * ★ **只给探针用**：把浮层往上顶一层，或者按 hwnd 插到某个窗口后面。
@@ -470,8 +600,32 @@ ipcMain.handle('probe:sleep', (_e, on) => {
  *    不是模型吐的原文 —— 原文里那些 `[心情 好]` 不该进她的"说过什么"。
  */
 function recordSaid(text, kind) {
-  try { memory.addSpoken(kind || '主动', text); }
+  const k = kind || '主动';
+  try { memory.addSpoken(k, text); }
   catch (err) { console.error('[说] 记「我说过什么」失败：' + err.message); }
+
+  /*
+   * ★★ 她**主动说的**话也要进「对话流」（2026-10-17 他选的方案 A）。
+   *
+   *   他报的现象：「识屏后说的话和自言自语**不会同步进聊天框**」。
+   *   病根是**两本账**：
+   *     · 这本 `memory.addSpoken` = 「我说过什么」（防复读用）
+   *     · 聊天窗拉历史用的是 `memory.recent()` = **对话流**
+   *   ⇒ 识屏/自言语的话只进了前一本 ⇒ **聊天窗重开、看聊天记录时一个字都看不到**
+   *     （当场能看到，是因为 `speak:say` 那条事件会让聊天窗追加一句）。
+   *
+   *   ⚠️⚠️ `对话` / `快速问答` 这两类**绝对不能**再 push ——
+   *      `brain.reply` 自己已经 push 过 assistant 了（见 `brain.cjs:126`），
+   *      这里再记一次，聊天记录里每条都会变两条。
+   *      这两类也正好是"走 brain 的"，所以按 kind 分流最省事、也不用改调用点。
+   *
+   *   ⚠️ 带了 `{ kind }` 一起存 —— 以后要在聊天窗里给它们配个不一样的样式，
+   *      或者过滤掉，都还有依据（不然就是糊成一片普通对话）。
+   */
+  if (k !== '对话' && k !== '快速问答') {
+    try { memory.push('assistant', text, { kind: k }); }
+    catch (err) { console.error('[说] 记进对话流失败：' + err.message); }
+  }
 }
 
 /**
@@ -481,29 +635,62 @@ function recordSaid(text, kind) {
  *    `shell.openPath` 能打开任意路径，那等于把整台机器的文件系统递出去。
  *    这道闸很便宜，加上。
  */
-ipcMain.handle('app:reveal', (_e, kind) => {
+ipcMain.handle('app:reveal', async (_e, kind) => {
+  const key = String(kind);
   const targets = {
     backup: backup.root(),
     config: cfg.DIR,
     data: cfg.DATA,
     logs: path.join(cfg.DIR, 'logs'),
   };
-  const dir = targets[String(kind)];
+  const dir = targets[key];
   if (!dir) return { ok: false, why: '不认识的目录' };
+
   const full = path.resolve(dir);
-  if (!full.startsWith(path.resolve(cfg.DIR))) {
-    return { ok: false, why: '越界了' };
-  }
+
+  /*
+   * ⚠️⚠️ 「在不在允许范围内」分两种判据（2026-10-16 定的口径）。
+   *
+   *   · **backup 是他在设置面板里自己配的目录** —— `backup.root()` 明确支持
+   *     绝对路径（它自己的注释就写着 `D:\Yachiyo备份`「他想挪到别的盘就挪」）。
+   *     所以这一项**不按 cfg.DIR 判**。以前一律按 cfg.DIR 判，
+   *     备份一挪到别的盘，面板上那颗「打开备份文件夹」就直接报「越界了」。
+   *   · 其余三项是我们自己的目录，仍然只允许 cfg.DIR 底下，而且前缀
+   *     **必须带分隔符** —— 裸 `startsWith` 会把 `…\Yachiyo-别的东西` 也放行。
+   *
+   * ⚠️ 这条闸**能挡什么、挡不住什么**，说清楚，免得自己骗自己：
+   *
+   *   它挡的是「渲染层随手传个路径过来」—— `kind` 是白名单，
+   *   真正打开的目录**全由主进程自己算**，渲染层够不着。
+   *   （原来 backup 那一支写的是 `full === path.resolve(backup.root())` ——
+   *    可 `full` 本来就是从 `backup.root()` 来的，**恒真**，等于没判。）
+   *
+   *   它**挡不住**「先改 `backupDir` 成任意绝对路径、再 reveal」——
+   *   但那个口子在 `cfg:set`（任何配置键都能改）上，在这儿多拦一道是自欺欺人。
+   *   真要紧的是 `shell.openPath` **只开目录、不执行**，所以这条风险本来就低。
+   */
+  const inCfgDir = full === path.resolve(cfg.DIR)
+    || full.startsWith(path.resolve(cfg.DIR) + path.sep);
+  if (key !== 'backup' && !inCfgDir) return { ok: false, why: '越界了' };
+
   try {
     fs.mkdirSync(full, { recursive: true });     // 还没备过的时候目录可能不存在
-    shell.openPath(full);
-    return { ok: true, dir: full };
   } catch (err) {
     return { ok: false, why: err.message };
   }
+
+  /*
+   * ⚠️⚠️ `shell.openPath` 是**异步**的，返回一个字符串：
+   *    空串 = 打开了；非空 = 错误信息。**打不开的时候它不抛异常**。
+   *    原来没 await、接着就 `return { ok: true }` —— 系统没打开也报成功，
+   *    他那边看到的是「点了按钮、界面说成功了，可资源管理器压根没出来」。
+   */
+  const why = await shell.openPath(full).catch((e) => e.message);
+  if (why) return { ok: false, why };
+  return { ok: true, dir: full };
 });
 
-ipcMain.handle('ov:probe-raise', (_e, kind, afterHwnd) => {
+devOnly(() => ipcMain.handle('ov:probe-raise', (_e, kind, afterHwnd) => {
   const w = overlay.list().get(kind);
   if (!w || w.isDestroyed()) return { ok: false, why: '窗口不在' };
   const raw = afterHwnd ? parseInt(String(afterHwnd), 10) : 0;
@@ -517,7 +704,7 @@ ipcMain.handle('ov:probe-raise', (_e, kind, afterHwnd) => {
     try { w.moveTop(); } catch (err) { return { ok: false, why: err.message }; }
   }
   return { ok: true };
-});
+}));
 
 /**
  * ★ **只给探针用**：记下每一次浮层窗口被挪/被改尺寸。
@@ -531,7 +718,7 @@ ipcMain.handle('ov:probe-raise', (_e, kind, afterHwnd) => {
  * ⚠️ 只在**探针调过一次之后**才记，平时零开销。
  */
 const probeBoundsLog = new Map();          // kind -> [{t, from, to}]
-ipcMain.handle('ov:probe-bounds', (_e, kind, on) => {
+devOnly(() => ipcMain.handle('ov:probe-bounds', (_e, kind, on) => {
   const w = overlay.list().get(kind);
   if (!w || w.isDestroyed()) return { ok: false, why: '窗口不在' };
   if (on === false) { w.__probeBounds = false; return { ok: true, log: probeBoundsLog.get(kind) || [] }; }
@@ -551,7 +738,7 @@ ipcMain.handle('ov:probe-bounds', (_e, kind, on) => {
     return r;
   };
   return { ok: true };
-});
+}));
 
 /**
  * 某个浮层现在开着没有。
@@ -616,8 +803,43 @@ ipcMain.handle('cfg:dir',   () => cfg.DIR);
    IPC · 窗口
    ============================================================ */
 
+/*
+ * ★ 穿透状态变了就记一行（2026-10-17 加的，**为了逮那个"显示后点不动"**）。
+ *
+ *   ⚠️ 必须**去重**：页面那边每 500ms 无条件重申一次（`reassertMouse`），
+ *      不去重的话 `_probe.log` 一天能涨十几万行。
+ *   ⚠️ 只记"变了"的那一下，所以他下次复现的时候，这份日志能直接告诉我们：
+ *      显示之后穿透到底**有没有被收回来**（`收回` 那条就是"能点着了"）。
+ */
+let lastIgnoreLogged = null;
 ipcMain.on('win:ignore-mouse', (_e, on) => {
   win?.setIgnoreMouseEvents(!!on, { forward: true });
+  if (lastIgnoreLogged !== !!on) {
+    lastIgnoreLogged = !!on;
+    plog(`[鼠标] 穿透 ${on ? '打开（鼠标会穿过去）' : '收回（她能点着了）'}`);
+  }
+});
+
+/*
+ * ★ 他碰她了 → 把她从「准备睡」里叫醒（2026-10-17 加的）。
+ *
+ *   他报的 #4 后来确认了：**她当时是睡着状态**。那状态有**两层**：
+ *     · 视觉那层（rig 的 sleep 姿态）—— 批次 B 的 `wakeUp()` 管了
+ *     · **气泡那层**（下面 review 的「准备睡」）—— `ui/bubble.js` 里
+ *       「睡着了一个气泡都不冒」闸的就是它
+ *   第二层不解决，点她还是"看着一点反应都没有"（人坐起来了，但不吭声）。
+ *
+ *   ⚠️ `review.wake()` **本来就有**（注释写着「被叫醒，退出准备睡」）——
+ *      只是**全工程没有人调它**。这里就是把它接上，不是新造一个。
+ *   ⚠️ 顺带把聊天那道闸也解了：`chat:send` 里 `if (review.isSleeping())` 会直接回
+ *      「她睡了」，于是「打开聊天窗想跟她说话」也会被挡（同一个根因）。
+ */
+ipcMain.on('pet:wake', () => {
+  try {
+    const was = review.isSleeping();
+    review.wake();
+    if (was !== review.isSleeping()) overlay.broadcast('sleep:changed', review.isSleeping());
+  } catch { /* 叫不醒也不能影响他点她 */ }
 });
 
 ipcMain.on('win:focus', () => {
@@ -642,6 +864,33 @@ ipcMain.on('win:focusable', (_e, on) => {
 });
 
 ipcMain.on('win:hide', () => { if (win) { win.hide(); cfg.set('petVisible', false); trayMod.refresh(cfg, trayApi); } });
+
+/*
+ * ★ 只给探针用：走**托盘那条路**显示/隐藏（2026-10-17 加的）。
+ *
+ *   他报的：「托盘右键菜单的**显示/隐藏桌宠**，隐藏后再显示就点不动她了；
+ *   但**右键点她仍然可以唤出菜单**」。
+ *   ⚠️ `trayApi.toggleShow()` 跟 `cfg:set('petVisible')` 那条**不是同一段代码** ——
+ *      托盘这条是 `win.show()` + `setAlwaysOnTop(...)` 两句。要复现就得走他那条。
+ *   ⚠️ devOnly：正式版里这个 handler 不存在，页面那边 invoke 会 reject（无害）。
+ */
+devOnly(() => ipcMain.handle('probe:tray-toggle', () => {
+  trayApi.toggleShow();
+  return { visible: !!(win && !win.isDestroyed() && win.isVisible()) };
+}));
+
+/*
+ * ★ 只给探针用：**假装**进了/退了游戏，把 `game:changed` 广播一次。
+ *
+ *   为什么要这个口子：真实触发要么真开一个全屏游戏（做不到），
+ *   要么等他自己去打（等不起）。而这一条要验的是**页面那半**——
+ *   "收到广播之后她是不是真的坐下了、并且钉住不走"。
+ *   ⚠️ 判定逻辑本身（全屏 + 进程）由 `selfcheck-gamedetect` 的 25 项钉着，不靠这个。
+ */
+devOnly(() => ipcMain.handle('probe:game', (_e, on) => {
+  overlay.broadcast('game:changed', { on: !!on, why: '探针' });
+  return { sent: !!on };
+}));
 ipcMain.on('win:open-settings', () => win?.webContents.send('tray:open-settings'));
 ipcMain.handle('win:screen', () => {
   const d = screen.getPrimaryDisplay();
@@ -734,27 +983,21 @@ function saveOnExit() {
 }
 
 /**
- * 问一句、把回答流式推出去 —— 两个入口共用这一份。
+ * 说话**之前**要办的两件事：问到天气就现查一次、问到新鲜事就先联网。
+ * 返回 `onDelta`（边收边推那个回调）。
  *
- * ⚠️⚠️ 别退回去用 `win.webContents.send(...)`。
- *    聊天窗拆成独立的 chat.html 之后，流只发给主窗口的话就送到没人看的地方去了：
- *    主窗口里没有聊天 DOM（收了也是空转），聊天窗里那条气泡**永远是空的**，
- *    而且不报错、`send` 还老老实实返回 ok —— 假成功。踩过一次。
+ * ⚠️ 为什么单独拎出来（2026-10-14）：
+ *    这两段原来直接摊在 `runChat` 里，位置是 `busy = ctl` **之后**、
+ *    主 try **之前** —— 抛了就绕过 finally，`busy` 永远清不掉。
+ *    挪出来、调用点放进 try 里面，才不会「炸一次就再也说不了话」。
  *
- * @param {string} text
+ * @param {string} msg 他说的那句（已 trim）
  * @param {{delta:string, done:string, fail:string}} ev 三个事件名
- *        （聊天窗走 chat:*，快速问一句走 bubble:* —— 见 renderer/ui/ask.js）
+ * @returns {Promise<(t:string)=>void>}
  */
-async function runChat(text, ev) {
-  const msg = String(text || '').trim();
-  if (!msg) return { ok: false, error: '空的' };
-  if (busy) return { ok: false, error: '上一句还没说完，等一下下' };
-
-  const gate = brain.ready();
-  if (!gate.ok) return { ok: false, error: gate.why, needKey: true };
-
-  const ctl = new AbortController();
-  busy = ctl;
+async function preflight(msg, ev) {
+  // 边收边推 —— 不然要干等到整段生成完才出字
+  const onDelta = (t) => overlay.broadcast(ev.delta, t);
 
   /*
    * ★ 他这句话在问天气 → **现查一次**（旧工程 Invoke-AiWeatherRefreshNow 那套）。
@@ -766,18 +1009,27 @@ async function runChat(text, ev) {
    */
   if (weather.isAsking(msg)) {
     try {
+      /*
+       * ⚠️⚠️ **不要传 `force: true`**（2026-10-16 修的）。
+       *
+       *    `force` 在 `fetchWeather` 里是**同时跳过缓存和退避**的 ——
+       *    而这里原来写死了 force:true ⇒ 他每提一次天气就真联网一次。
+       *    那条链的调用方只有两处，另一处是设置面板的「查一下」按钮
+       *    （那个**该**强制，是他手点的）—— 也就是说**自动那条路一直是强制的**。
+       *
+       *    而 `weather.cjs` 文件头写着「缓存不能删，因为它是**防限流**的」。
+       *    现在按正常口径来：新鲜就用缓存，过点了才真去查。
+       *    5 秒硬上限照样留着（查不动就不等了）。
+       */
       const r = await Promise.race([
-        weather.fetchWeather({ force: true }),
+        weather.fetchWeather(),
         new Promise((res) => setTimeout(() => res({ ok: false, why: '查得太慢，先不等了' }), 5000)),
       ]);
-      plog('[weather] 他问到天气 → 现查：' + (r.ok ? (r.cached ? '用缓存' : '拿到新的') : ('没查到 · ' + r.why)));
+      plog('[weather] 他问到天气 → 查：' + (r.ok ? (r.cached ? '用缓存' : '拿到新的') : ('没查到 · ' + r.why)));
     } catch (err) {
       plog('[weather] 现查失败：' + err.message);
     }
   }
-
-  // 边收边推 —— 不然要干等到整段生成完才出字
-  const onDelta = (t) => overlay.broadcast(ev.delta, t);
 
   /*
    * ★ 联网：他这句要是明显在问"新鲜事" → **先查好再让她答**。
@@ -804,7 +1056,75 @@ async function runChat(text, ev) {
     plog(`[联网] ${w.ok ? `查到 ${w.answer.length} 字（服务端搜了 ${w.uses} 次）` : '没查到：' + w.why}`);
   }
 
+  return onDelta;
+}
+
+/**
+ * 问一句、把回答流式推出去 —— 两个入口共用这一份。
+ *
+ * ⚠️⚠️ 别退回去用 `win.webContents.send(...)`。
+ *    聊天窗拆成独立的 chat.html 之后，流只发给主窗口的话就送到没人看的地方去了：
+ *    主窗口里没有聊天 DOM（收了也是空转），聊天窗里那条气泡**永远是空的**，
+ *    而且不报错、`send` 还老老实实返回 ok —— 假成功。踩过一次。
+ *
+ * @param {string} text
+ * @param {{delta:string, done:string, fail:string}} ev 三个事件名
+ *        （聊天窗走 chat:*，快速问一句走 bubble:*）
+ *        ⚠️ 2026-10-17：「快速问一句」那个入口（双击弹的输入条）**删了**
+ *        —— 双击现在直接开聊天窗。所以 `bubble:*` 这条通道**暂时没有调用方**，
+ *        留着备用（`chat:send-quick` 那条 IPC 也还在 preload 里）。
+ */
+async function runChat(text, ev) {
+  /*
+   * ⚠️⚠️ 这三条**早退**都带 `early: true`（2026-10-16 加的）。
+   *
+   *    它们**只 return、不广播 `ev.fail`** —— 聊天窗那条路自己会把
+   *    `r.ok === false` 显示成一行提示，所以以前没露馅。
+   *    可双击快问（ask.html）是「按下回车立刻收窗、不 await」的，
+   *    于是他一按回车：框没了、气泡也没有，**什么都不知道**
+   *    （没填 Key、上一句还没说完，都会这样）。
+   *
+   *    ⇒ 打上标记，让 `chat:send-quick` 那边知道"这条得替他广播一次"。
+   *      （真·出错那条路已经自己广播过了，不能再补一次，否则气泡报两遍。）
+   */
+  const msg = String(text || '').trim();
+  if (!msg) return { ok: false, error: '空的', early: true };
+
+  /*
+   * ⚠️ **他一开口就通知自言语让路**（2026-10-17 接上的，清单 #42）。
+   *    这个函数一直存在、注释也写着「他说话了 —— 自言语让一让」，
+   *    可**全仓没有任何地方调它** ⇒ 自言语不知道他刚开口，
+   *    照样在他这句还没答完时插嘴，两边的话在同一个气泡里交错。
+   *    ⚠️ 位置：确认"有内容"之后、别的早退**之前** —— 他说了就是说了，
+   *      哪怕这一句因为正忙没发出去，那份"让路"也该生效。
+   */
+  selftalk.noteUserSpoke(msg);
+
+  if (busy) return { ok: false, error: '上一句还没说完，等一下下', early: true };
+
+  const gate = brain.ready();
+  if (!gate.ok) return { ok: false, error: gate.why, needKey: true, early: true };
+
+  const ctl = new AbortController();
+  busy = ctl;
+
+  /*
+   * ⚠️⚠️ 从这儿到函数结尾，**放锁只有下面那一个 finally**（2026-10-14 修的）。
+   *
+   *    原来「说话前那两件事」（天气 / 联网）摊在 `busy = ctl` 之后、
+   *    主 try **之前** —— 它们要是抛了（`overlay.broadcast` / `plog` 都够呛），
+   *    就绕过了 finally，`busy` 永远清不掉 ⇒ **她再也不能回话，只能重启**。
+   *    现在那两件事在 `preflight()` 里、调用点在 try 里面，怎么炸都会放锁。
+   */
   try {
+    const onDelta = await preflight(msg, ev);
+
+    /*
+     * ⚠️ 查天气 / 查联网最长能花 9 秒，这期间「停止」是够不着 fetch 的。
+     *    在这儿补一次判 —— 不然他点了停止还得干等，看着像按钮坏了。
+     */
+    if (ctl.signal.aborted) throw Object.assign(new Error('取消了'), { hard: true });
+
     const out = await brain.reply(msg, { onDelta, signal: ctl.signal });
     overlay.broadcast(ev.done, {
       text: out.text, cost: out.cost, ms: out.ms, firstMs: out.firstMs,
@@ -824,7 +1144,22 @@ async function runChat(text, ev) {
     plog('[chat] 出错：' + err.message);
     return { ok: false, error: err.message };
   } finally {
-    busy = null;
+    /*
+     * ⚠️⚠️ **只放自己那把锁**（2026-10-14 修的）。无条件 `busy = null` 会出这种交错：
+     *
+     *   ① 他说 A        → busy = A
+     *   ② 他点「停止」   → 旧代码在这里就 busy = null 了
+     *   ③ 他马上说 B     → busy = B（闸门放行，因为已经被清空）
+     *   ④ A 那边回来收尾 → 无条件 busy = null ⇒ **B 的锁被 A 清掉**
+     *   ⑤ 他再说 C       → 本该被「上一句还没说完」挡住，实际**放行了** ⇒ 两条请求并发
+     *   ⑥ 他再点「停止」 → abort 打到 C 上，**B 取消不掉了**
+     *
+     *    照抄那三行做的逻辑复现见 `留痕\工具脚本\repro-busy-race.cjs`。
+     *
+     *    配上 `chat:abort` 那边**不再提前清空**（它也改成只 abort），
+     *    这把锁就从头到尾只由「它自己的发起者」释放。
+     */
+    if (busy === ctl) busy = null;
   }
 }
 
@@ -842,17 +1177,40 @@ ipcMain.handle('chat:send', (_e, text) => runChat(text, {
  *    挡在入口而不是 runChat 里：runChat 是聊天窗共用的，
  *    **他主动打开聊天窗打字时不该被挡**（那是显式交互，不是她"自己冒泡"）。
  */
-ipcMain.handle('chat:send-quick', (_e, text) => {
+ipcMain.handle('chat:send-quick', async (_e, text) => {
   if (review.isSleeping()) {
     plog('[说] 「准备睡」挡下一次双击提问：' + String(text || '').slice(0, 40));
     return { ok: false, error: '她睡了', sleeping: true };
   }
-  return runChat(text, {
+  const r = await runChat(text, {
     delta: 'bubble:delta', done: 'bubble:done', fail: 'bubble:error',
   });
+
+  /*
+   * ⚠️ 早退那几种替他把话**冒成气泡**（2026-10-16 修的）。
+   *    ask.html 那边是「按下回车立刻收窗、不 await」的（他明确要求的交互），
+   *    所以主进程不广播 = 他什么反馈都看不到。
+   *    只给 `early` 的补 —— 真出错那条路 runChat 自己已经广播过了，补了会报两遍。
+   *
+   *    ⚠️ 睡着那条**故意不补** —— 那是他自己定的规矩
+   *      （「睡着时不会有任何气泡弹出」），而且 app.js 那边还有第二道闸。
+   */
+  if (r && r.early) overlay.broadcast('bubble:error', r.error || '说不出来');
+
+  return r;
 });
 
-ipcMain.on('chat:abort', () => { busy?.abort(); busy = null; });
+/*
+ * ⚠️⚠️ 这里**只 abort、不提前清空 `busy`**（2026-10-14 修的）。
+ *
+ *    原来还跟一句 `busy = null` —— 那就是竞态的口子：
+ *    清空之后他马上发的新请求会被放行，而**旧请求收尾时又无条件再清一次**，
+ *    把新请求的锁一起清掉 ⇒ 能并发、而且「停止」会打到别的请求上去。
+ *    完整交错序列见 `runChat` 尾部 finally 的注释。
+ *
+ *    放锁交给**发起它的那个 `runChat` 自己** —— 它一定会在 finally 里放。
+ */
+ipcMain.on('chat:abort', () => { busy?.abort(); });
 
 ipcMain.handle('chat:history', () => memory.recent(60));
 // 同上：清空的通知也得广播 —— 收的是聊天窗，不是主窗口
@@ -860,6 +1218,32 @@ ipcMain.on('chat:clear', () => { memory.clear(); overlay.broadcast('chat:cleared
 
 ipcMain.handle('usage:get',   () => usage.all());
 ipcMain.handle('usage:reset', () => usage.reset());
+
+/** 图的三种粒度（日=近24小时按小时 / 周=近7天 / 月=近30天）—— 见 usage.series() */
+ipcMain.handle('usage:series', (_e, range) => usage.series(range === 'week' || range === 'month' ? range : 'day'));
+
+/* ---------- AI 服务商预设（2026-10-17 加的）----------
+ *
+ * ⚠️ 这几条**只碰 `data/providers.json`**。唯一"越界"的是 `activate` ——
+ *    它会把那个预设的值**写回 config**（`providers.activate()` 内部干），
+ *    这样全工程读 config 的那一票模块**一行都不用改**。
+ *
+ * ⚠️ 切完预设要**广播**：config 是被写回了，可渲染层手里那份 CFG 是旧的
+ *    —— 不广播的话他切完 Kimi，输入框里还显示着 DeepSeek 的地址。
+ */
+ipcMain.handle('providers:list',     () => providers.list());
+ipcMain.handle('providers:current',  () => providers.current());
+ipcMain.handle('providers:save',     (_e, id, patch) => providers.saveOne(String(id || ''), patch || {}));
+ipcMain.handle('providers:add',      (_e, name) => providers.addCustom(name));
+ipcMain.handle('providers:remove',   (_e, id) => providers.remove(String(id || '')));
+ipcMain.handle('providers:activate', (_e, id) => {
+  const r = providers.activate(String(id || ''));
+  if (r.ok) {
+    overlay.broadcast('cfg:changed', { key: 'apiBase', value: r.item.base || '' });
+    overlay.broadcast('providers:changed', providers.list());
+  }
+  return r;
+});
 
 /**
  * 每个姿态各自的倾斜角 —— 设置面板那 5 个滑块。
@@ -1083,7 +1467,16 @@ const trayApi = {
   },
   set(k, v) {
     cfg.set(k, v);
-    win?.webContents.send('cfg:changed', { key: k, value: v });
+    /*
+     * ⚠️ 要**广播给所有窗口**（2026-10-16 修的）。
+     *
+     *    原来只 `win.webContents.send('cfg:changed', …)` —— 只有主窗口收得到。
+     *    可**设置面板 / 菜单是独立浮层窗口**，它们的本地配置缓存只靠
+     *    `cfg:changed` 更新（见 host.js）。于是：从托盘切夜间模式或音效，
+     *    再打开面板，显示的还是**旧主题、旧勾选** —— 跟 IPC 那条路
+     *    （`broadcastCfg`）不是同一套。
+     */
+    broadcastCfg([k]);
     trayMod.refresh(cfg, trayApi);
   },
   // ⚠️ 托盘项现在开的是**独立浮层窗口**，不是主窗口里的 DOM
@@ -1142,13 +1535,69 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (win) { win.show(); win.setAlwaysOnTop(!!cfg.get('alwaysOnTop'), 'screen-saver'); }
+    /*
+     * ⚠️ 这条路径也要**把状态一起摆正**（2026-10-16 修的）。
+     *
+     *    原来只 show 窗口，不碰 `cfg.petVisible`、也不刷托盘 ⇒
+     *    他把她隐藏过之后双击图标：窗口出来了，托盘还写着「显示八千代」，
+     *    点一下反而又把她藏起来。
+     *    双击图标本来就是"**他显式要她出来**"，所以顺手把配置和托盘一起纠正。
+     */
+    if (!win) return;
+    win.show();
+    win.setAlwaysOnTop(!!cfg.get('alwaysOnTop'), 'screen-saver');
+    if (cfg.get('petVisible') === false) cfg.set('petVisible', true);
+    trayMod.refresh(cfg, trayApi);
   });
 
   app.whenReady().then(() => {
     cfg.load();
     plog('配置目录：' + cfg.DIR);
+    /*
+     * ★ AI 服务商预设：首次运行把 config 里**正在用的那一套**搬进预设
+     *   （他原来只有一份配置，不搬的话打开面板会看到预设全空，以为 key 丢了）。
+     * ⚠️ 必须在 cfg.load() 之后 —— 它要读 apiBase / apiKey / model。
+     * ⚠️ 失败也不能拦住启动：迁移只是"少填一次"，不是她能不能跑的前提。
+     */
+    try {
+      if (providers.migrate()) plog('[providers] 把现有的一套 API 配置搬进预设了');
+      /*
+       * ★ 保险（2026-10-17 加的）：config 里那三项空着、而当前预设里还有值 ⇒ 补回去。
+       *   实测撞出来的坑：切到 Kimi（它 Key 是空的）会把那份空值写进 config，
+       *   关掉再启动就成了「我的 Key 丢了」。真身在 providers.json，config 只是副本。
+       */
+      if (providers.ensureConfig()) plog('[providers] config 里的接入配置是空的，已用当前预设补回');
+    } catch (err) {
+      plog('[providers] 迁移失败（不影响她用）：' + err.message);
+    }
     createWindow();
+    startCursorWatch();     // ★ 光标守望：出了那条带就通知页面打开穿透（见函数注释）
+
+    /*
+     * ★ 游戏检测（2026-10-17 加的）：他在全屏游戏里就让她坐着。
+     *   他定的口径是**全屏 + 进程**两条一起看（「这样更准」），判定逻辑在
+     *   `core/gamedetect.cjs` 的 `judge()` 里，自检钉了 25 项。
+     *
+     *   ⚠️ 回调**只在状态变化时**触发（模块里自己去了重）—— 页面那边不用再判一遍。
+     *   ⚠️ 配置**每次现读**：他在设置里关掉能立刻生效，不用重启桌宠。
+     *   ⚠️ 这里只广播「是不是在游戏」，**不碰她的状态机** ——
+     *      状态只有一个主人（页面），两头改必然打架。
+     */
+    try {
+      gamedetect.start((isGame, why) => {
+        plog(`[游戏] ${isGame ? '进了游戏' : '退出游戏'}：${why}`);
+        overlay.broadcast('game:changed', { on: isGame, why });
+      }, () => ({
+        enabled: cfg.get('gameDetect') !== false,
+        exclude: (Array.isArray(cfg.get('gameExclude')) && cfg.get('gameExclude').length)
+          ? cfg.get('gameExclude')
+          : gamedetect.DEFAULT_EXCLUDE,
+      }));
+    } catch (err) {
+      plog('[游戏] 启动检测失败（不影响别的）：' + err.message);
+    }
+    // 退出时把那个常驻 PowerShell 收掉（不然 Windows 上偶尔会留一个孤儿进程）
+    app.on('before-quit', () => { try { gamedetect.stop(); } catch { /* 已经没了 */ } });
     try {
       trayMod.create(cfg, trayApi);
       plog('托盘建好了');
@@ -1195,7 +1644,18 @@ if (!app.requestSingleInstanceLock()) {
         plog(`[说] 「准备睡」挡下一句（${o.kind || '主动'}）：${text}`);
         return;
       }
-      if (win && !win.isDestroyed()) win.webContents.send('speak:say', String(text), o);
+      /*
+       * ⚠️⚠️ 用 `overlay.broadcast`，**不要**只发给主窗口（2026-10-16 修的）。
+       *
+       *    broadcast 的名单是 `[mainWin, ...所有浮层窗口]` —— 主窗口照样收得到，
+       *    但**聊天窗**（一个独立浮层）以前永远收不到 ⇒
+       *    她自言自语、识屏点评、晚安这些话，聊天窗里**一个字都没有**。
+       *    他 2026-10-16 报的「气泡内文字没有同步到聊天框」就是这个。
+       *
+       *    （`bubble:*` 那条走 runChat 的流本来就是 broadcast，所以只有
+       *      `sayIt` 这一条是漏的。现在两条都到得了聊天窗。）
+       */
+      overlay.broadcast('speak:say', String(text), o);
       plog(`[说] ${o.kind || ''} ${text}`);
     };
 
@@ -1251,6 +1711,15 @@ if (!app.requestSingleInstanceLock()) {
 
     selftalk.attach({
       say: sayIt, busy: bubbleBusy, sleeping: () => review.isSleeping(),
+      /*
+       * ⚠️ **`chatBusy` 跟 `busy` 不是一回事**（2026-10-17 加的，清单 #42）：
+       *    `bubbleBusy` 是去主窗口问「`#bubble` 里有没有字」，
+       *    而**聊天窗的流式回复根本不碰那个气泡** ⇒ 对着聊天窗它恒为 false，
+       *    那道闸等于不存在。
+       *    这里直接用主进程那个 `busy`（`runChat` 正在跑时它是非空的），
+       *    也就是「她这一轮回复跑完没有」。
+       */
+      chatBusy: () => !!busy,
       // ⚠️ 自言语那句要单独记 —— 它不走 runChat，所以 recordSaid 得单独接上
       onSaid: (text) => recordSaid(text, '自言自语'),
     });
@@ -1309,6 +1778,70 @@ if (!app.requestSingleInstanceLock()) {
     heartbeat.on('profile', (idleMin, now) => profiletool.tick(now || new Date()));
 
     /*
+     * ★ 「花超了提醒我」（2026-10-16 接上的）。
+     *
+     *   ⚠️ 这一整套原来是**死的**：`usage.overLimit` / `spendAlert` / `spendLimit`
+     *      只出现在 config 的默认值和设置面板的控件里，
+     *      **没有任何一行逻辑读它们** —— 设了月上限也不会有人提醒。
+     *
+     *   ⚠️ 只提醒**一次/月**：心跳 5 秒一拍，不限次的话每拍都要冒一句。
+     *      判据用账本自己的 `month` 字段（跨月它会自己归零），别自己算日期 ——
+     *      账本用的是本地月份，自己算容易在月初月末差一天。
+     */
+    let spendAlertedFor = '';
+    heartbeat.on('spend', () => {
+      if (cfg.get('spendAlert') === false) return;
+      const limit = Number(cfg.get('spendLimit')) || 0;
+      if (limit <= 0) return;
+      if (!usage.overLimit(limit)) return;
+
+      const st = usage.all();
+      if (spendAlertedFor === st.month) return;
+      spendAlertedFor = st.month;
+
+      // ⚠️ 先记日志 —— 它可能被「准备睡」那道闸挡掉，日志是**唯一**的验收指标
+      plog(`[用量] 本月已花 ¥${st.monthCost.toFixed(2)}，超过设的上限 ¥${limit}`);
+      sayIt(`这个月我们花到 ${st.monthCost.toFixed(2)} 块了，超过你设的线啦。`, { kind: '提醒', seconds: 12 });
+    });
+
+    /*
+     * ★ 备份（2026-10-17 接上心跳的，清单 #6）。
+     *
+     *   ⚠️ 原来它**只在启动 8 秒后跑一次**（见下面那一小段），注释给的理由是
+     *      "放心跳的话每 5 秒要 stat 一遍目录、读一遍备份状态，纯白烧 IO"。
+     *      那个顾虑是真的 —— 但代价太大：桌宠长期不关机 ⇒ 备份要一直等到
+     *      下次启动。第 3 天崩了或磁盘出问题，手上没有近期备份。
+     *      备份是保他数据的东西，不能赌"他什么时候重启"。
+     *
+     *   ⇒ 两个顾虑一起解：**挂心跳 + 内存节流**（跟上面 spend 那个一个套路）。
+     *      一小时才真判一次，一天最多读 24 次备份状态 ——
+     *      比"每 5 秒一拍"省 700 多倍，而且不用再等重启。
+     *
+     *   ⚠️ 节流用**内存变量、不落盘**：重启就该重新判一次（那才是原来那条语义）。
+     */
+    /** 跑一次备份并打日志 —— **启动那一拍和心跳共用这一个实现**，改一处两处都跟着 */
+    const runBackup = () => {
+      try {
+        const r = backup.tick();
+        plog(`[备份] ${r.ran ? '跑了' : '没跑'}（${r.why || '到点了'}）` +
+             ` 聊天 ${r.chat} · 日志 ${r.logs}` +
+             (r.memory ? ` · 记忆 ${r.memory.ok ? r.memory.files + ' 个文件' : '失败：' + r.memory.why}` : ''));
+      } catch (err) {
+        // ⚠️ 备份绝不能因为她别的部件有问题就带她一起挂
+        plog('[备份] 出错：' + err.message);
+      }
+    };
+
+    let lastBackupCheck = 0;
+    const BACKUP_CHECK_MS = 60 * 60 * 1000;
+    heartbeat.on('backup', () => {
+      const t = Date.now();
+      if (t - lastBackupCheck < BACKUP_CHECK_MS) return;
+      lastBackupCheck = t;
+      runBackup();
+    });
+
+    /*
      * ★ 识屏（2026-10-13）。
      *
      * ⚠️ core 层**不直接 require electron**（那种模块在 node 里跑不起来、
@@ -1342,28 +1875,19 @@ if (!app.requestSingleInstanceLock()) {
     } catch (err) { plog('[自启] 对账失败：' + err.message); }
 
     /*
-     * ★ 备份（每天第一次启动跑一次；记忆每周一次）。
-     *
-     * ⚠️ **放启动这一下、不放心跳**：
-     *    放心跳的话，判断是"今天备过没有"，跑完就一直是 no-op —— 但每 5 秒
-     *    去 stat 一遍目录、读一遍备份状态，纯白烧 IO。
-     *    启动一次判一次，正好是旧工程那条语义（"每天第一次启动 AI 时"）。
+     * ★ 备份的**启动那一拍**（每天第一次启动跑一次；记忆每周一次）。
      *
      * ⚠️ **延后 8 秒再跑**：启动那几秒她在忙着建窗口、拉天气、装托盘 ——
      *    备份要读几十个文件、还可能要打 zip，挤在一起会让她启动发涩。
      *    他也不差这 8 秒（备份是后台的事）。
+     *
+     * ⚠️ 这里原来写着「**放启动这一下、不放心跳**」，理由是放心跳会每 5 秒
+     *    去 stat 一遍目录、读一遍备份状态。那个顾虑 2026-10-17 用
+     *    **心跳 + 内存节流**解掉了（见上面 runBackup 那一段，清单 #6）：
+     *    现在这一拍负责"开机当天立刻备一次"，之后交给心跳每小时判一次。
+     *    ⇒ 实现只此一份（`runBackup`）—— 两边各写一份日志格式，早晚会不一致。
      */
-    setTimeout(() => {
-      try {
-        const r = backup.tick();
-        plog(`[备份] ${r.ran ? '跑了' : '没跑'}（${r.why || '到点了'}）` +
-             ` 聊天 ${r.chat} · 日志 ${r.logs}` +
-             (r.memory ? ` · 记忆 ${r.memory.ok ? r.memory.files + ' 个文件' : '失败：' + r.memory.why}` : ''));
-      } catch (err) {
-        // ⚠️ 备份绝不能因为她别的部件有问题就带她一起挂
-        plog('[备份] 出错：' + err.message);
-      }
-    }, 8000);
+    setTimeout(runBackup, 8000);
 
     /*
      * ★ 探针专用：真截一张屏并落盘。
@@ -1396,6 +1920,22 @@ if (!app.requestSingleInstanceLock()) {
     }
 
     if (PROBE_MS > 0) startProbe();
+  }).catch((err) => {
+    /*
+     * ⚠️⚠️ 启动阶段抛错**必须收场**（2026-10-16 加的）。
+     *
+     *    `app.whenReady().then(…)` 原来没有 `.catch` ——
+     *    `cfg.load()` 或 `createWindow()` 抛了的话，这个 Promise 拒绝**没人接**
+     *    （全仓也没有 `unhandledRejection` 监听），异常被静默吞掉。
+     *
+     *    而 `requestSingleInstanceLock()` 在上面**已经把锁拿到了** ⇒
+     *    进程既没有窗口也没有托盘，却占着单实例锁：
+     *    他再点一次只得到一句「已经有一个在跑了」，只能去任务管理器结束它。
+     *
+     *    所以：记一笔、然后**干净退出**，把锁放掉。
+     */
+    plog('[main] 启动阶段出错，退出：' + ((err && err.stack) || err));
+    try { app.exit(1); } catch { process.exit(1); }
   });
 
   // 她不占任务栏，关掉最后一个窗口不该等于退出 —— 退出只有托盘和 ⏻ 两条路

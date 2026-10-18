@@ -22,6 +22,8 @@ const store = require('./store.cjs');
 const T = require('./text.cjs');
 const memory = require('./memory.cjs');
 const habits = require('./habits.cjs');
+const usage = require('./usage.cjs');
+const provider = require('./provider.cjs');
 
 const FILE = path.join(store.STATE, 'learn.json');
 const FILE_PENDING = path.join(store.DATA, 'pending.md');
@@ -133,10 +135,15 @@ function memoryLoadRaw() {
 
 function buildPrompt() {
   const { habits: hs, memes: ms } = habits.listForPrompt();
+  /*
+   * ⚠️ 替换值包成函数 —— 见 profile.cjs 同款注释：
+   *    直接传字符串的话，他聊到钱、或正文里带 `$&` `$'` 这类序列时，
+   *    `replace` 会把它们**当特殊序列展开**，提示词当场被撑坏。
+   */
   return PROMPT
-    .replace('{habits}', hs.length ? hs.map((h) => `- ${h}`).join('\n') : '（还没有）')
-    .replace('{memes}', ms.length ? ms.map((m) => `- ${m}`).join('\n') : '（还没有）')
-    .replace('{chat}', recentChat());
+    .replace('{habits}', () => (hs.length ? hs.map((h) => `- ${h}`).join('\n') : '（还没有）'))
+    .replace('{memes}', () => (ms.length ? ms.map((m) => `- ${m}`).join('\n') : '（还没有）'))
+    .replace('{chat}', () => recentChat());
 }
 
 /* ═══════════════ 解析 ═══════════════ */
@@ -261,6 +268,21 @@ async function run({ chat, cfg: c }) {
     messages: [{ role: 'user', content: buildPrompt() }],
     thinking: c.thinking, reasoningEffort: c.thinkingDepth, temperature: c.temperature,
   });
+
+  /*
+   * ⚠️ 记账（2026-10-16 补的）。
+   *
+   *    这是**真花钱**的一次调用，可原来 `out.usage` 直接被丢掉了 ——
+   *    `usage.add` 全仓只在 brain / peeker / review / selftalk 里调过。
+   *    后果有两层：「用量与成本」长期偏低；而「花超了提醒我」
+   *    （`usage.overLimit`，见 #26）就是按这本账判的，也算不准。
+   *    口径跟 brain.cjs 的记账那段保持一致。
+   */
+  try {
+    usage.add(out.usage, provider.cost(out.usage, {
+      in: c.priceIn, out: c.priceOut, hit: c.priceCacheHit,
+    }));
+  } catch { /* 记不上账不该拦住学习 */ }
 
   const parsed = parse(out.text);
   const n = parsed.habits.length + parsed.memes.length;

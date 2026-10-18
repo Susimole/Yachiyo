@@ -340,7 +340,12 @@ function handleDrag(e, kind) {
   const card = $('.card');
   const first = { x: e.clientX, y: e.clientY };
   const startBar = getVar('--d-bar-h', 44);
-  const startSide = getVar('--d-side-w', 132);
+  /*
+   * ⚠️ 兜底值必须跟 `NUM_PARAMS` 里的 `def` 一致（2026-10-16 修的）。
+   *    原来这儿写的是 132、而参数表里 `--d-side-w` 的 `def` 是 **158** ——
+   *    没设过的时候第一次拖把手会**跳 26px**（一拖就蹦一下）。
+   */
+  const startSide = getVar('--d-side-w', 158);
 
   const move = (ev) => {
     if (kind === 'bar') {
@@ -695,7 +700,22 @@ function applyState() {
  *    用序号的话「习惯页第 0 组」和「高级页第 0 组」会串味。
  */
 function applyTexts() {
-  const cards = $$('#pMain .d-editable[data-dbase]');
+  /*
+   * ⚠️⚠️ 选择器**不能带 `.d-editable`**（2026-10-16 修的）。
+   *
+   *    `d-editable` 是**调试态的视觉标记**（虚线框），只在 on=true 时加
+   *    （见 wrapEditable / markEditable）。而这个函数恰恰是**非调试态**跑的
+   *    —— 重启之后 `preload → __designAttach` 走的就是非调试那一支。
+   *    带着 `.d-editable` 筛，命中 **0 个**，于是"存下来的文字改动重启后
+   *    只有一部分生效"（只有 CSS 变量和分组搬动回来了，文字没回来）。
+   *
+   * ⚠️ 也不能带 `#pMain` —— 顶栏标题 `.bar .title` 和左栏署名 `.p-foot b`
+   *    在 `#pMain` **外面**（它们在 `.card` 里，不随页重画），
+   *    带 `#pMain` 就把这两处漏掉了。
+   *
+   * `[data-dbase]` 是这两个函数唯一会打的标记，用它筛既全又准。
+   */
+  const cards = $$('[data-dbase]');
   for (const el of cards) {
     const sc = el.dataset.dscope;
     const base = el.dataset.dbase;
@@ -804,6 +824,16 @@ function installGroupMove() {
     const gid = box.dataset.dgroup;
     const title = $('.g-title', box);
     if (!gid || !title) return;
+
+    /*
+     * ⚠️ 按 gid 去重（2026-10-16 加的）—— 上面那半「左栏导航」有
+     *    `dataset.dnav` 兜着，**这半没有**：每跑一遍都会
+     *    `title.appendChild(ctl)` 新建一个下拉、再挂一批 drag 监听。
+     *    重画 / 重复 enable 就会叠出好几个一模一样的下拉。
+     *    ⚠️ 标记打在 title 上（挂监听的是它），不跟 dnav 共用。
+     */
+    if (title.dataset.dmove) return;
+    title.dataset.dmove = '1';
 
     title.classList.add('d-grab');
     title.draggable = true;
@@ -1127,7 +1157,14 @@ export async function enable() {
   card.classList.add('d-on');
   buildBar();
   addHandles();          // 这两个把手长在 `.card` 上，不随页重画，只挂一次
-  attachToPage();        // ★ 跟着页面走的那几样 —— 重画时靠 `__designAttach` 再调
+  /*
+   * ⚠️ 这里**不用再调 `attachToPage()`**（2026-10-16 修的）。
+   *    上面 `applyOverride()` 末尾的 `showPageNow()` 会触发整页重画，
+   *    而 settings.js 在重画末尾调的 `__designAttach()` 里，
+   *    只要 `on` 为真就会**调一次 attachToPage**（见它自己的定义）。
+   *    `on` 在第 1104 行就置 true 了，所以那一步一定跑得到 ——
+   *    原来这儿再来一次，等于一次 enable 连着挂两遍（下拉会重复建）。
+   */
   window.addEventListener('resize', drawMarks, true);
 
   // 面板窗口放大一点才施展得开

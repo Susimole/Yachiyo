@@ -276,7 +276,16 @@ function buildSystem(o = {}) {
     // ★ 情绪放**最后**（离正文最近）—— 见上面那段的顺序说明
     safeBlock('情绪', () => mood.buildBlock()),
 
-    timeBlock(o.now || new Date()),
+    /*
+     * ⚠️ 时间块**可以关掉**（2026-10-16 加的）。
+     *
+     *    自言语那边有个开关 `SelfTalkUseTime`（语义：「不想让她提时间」），
+     *    可时间块是在**这里**无条件拼进去的 —— 开关只作用在 selftalk 自己的
+     *    `context()` 上，系统提示词里照样有 ⇒ **关了等于没关**。
+     *    调用方传 `noTime: true` 就不给。
+     *    （默认还是给：主对话那边没有这个开关，行为一个字不变。）
+     */
+    ...(o.noTime ? [] : [timeBlock(o.now || new Date())]),
   ];
 
   // 空块整个不出现 —— 不留空标题，也不留连续空行

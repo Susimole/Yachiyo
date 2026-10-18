@@ -70,6 +70,13 @@ function tilts() {
 function setTilts(patch = {}) {
   const d = read();
   if (!d) return { ok: false, why: 'rig.json 读不了', tilts: {} };
+  /*
+   * ⚠️ 给 presets 兜个底（2026-10-16 修的）—— 他手改 rig.json 时把 presets
+   *    整段删掉/写坏的话，下面 `d.presets[p.preset]` 会当场抛
+   *    「Cannot read properties of undefined」（实测）。
+   *    注意只兜这一层：该不该写回去是 `read()` 的事，这里不动文件。
+   */
+  if (!d.presets || typeof d.presets !== 'object') d.presets = {};
 
   const valid = new Set(POSES.map((p) => p.mode));
   const changes = [];

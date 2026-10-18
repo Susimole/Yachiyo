@@ -19,6 +19,7 @@
 'use strict';
 
 const mood = require('./mood.cjs');
+const T = require('./text.cjs');
 
 /** 情绪词 → 档位。两边都是他自己写的近义词，宽一点 */
 const GOOD = '好|不错|开心|高兴|挺好|舒服';
@@ -69,7 +70,14 @@ function parse(text, o = {}) {
    *    标记占一整行的时候，剥掉会留下一个空行 —— 气泡里就是头顶一片空。
    *    `{2,}` 是因为：两行标记连在一起（很少见但不是不会）会留下两个。
    */
-  out = out.replace(/^\s*[\r\n]/gm, '').replace(/\n{2,}/g, '\n').trim();
+  /*
+   * ⚠️ 先把 CRLF 归一成 LF（2026-10-16 修的）。
+   *    `/^\s*[\r\n]/gm` 里的 `^` 在 **m 模式下也会匹配 `\r` 之后** ——
+   *    于是碰上 `\r\n` 它只吃掉 `\n`、把 `\r` 留在正文里（一个孤零零的回车）。
+   *    实测：`第一行\r\n[心情 不错]\r\n第二行` 剥完是 `第一行\r第二行`。
+   *    归一之后 `[\r\n]` 只会剩 `\n` 一种，这种"半吃"就没法发生了。
+   */
+  out = out.replace(/\r\n?/g, '\n').replace(/^\s*[\r\n]/gm, '').replace(/\n{2,}/g, '\n').trim();
 
   // 落到数据层
   for (const mk of marks) {
@@ -79,7 +87,8 @@ function parse(text, o = {}) {
      * 空正文 —— 说明她只吐了个标记、没说话 —— 那就给一句兜底，
      * 别因为「没写原因」把这次情绪丢掉（标记都打了，说明她真想变）。
      */
-    const why = out.replace(/[\r\n]+/g, ' ').trim().slice(0, 40) || '说不出为什么，就是不顺';
+    // ⚠️ 用 T.cut 不 slice —— 正文里带个 emoji 就会被切出半个字符（见 text.cjs 的 cut）
+    const why = T.cut(out.replace(/[\r\n]+/g, ' ').trim(), 40) || '说不出为什么，就是不顺';
     const r = mood.set(mk.mood, why, { from: o.chain || '对话' });
     if (!r.ok) console.log(`[markers] 情绪没记：${r.why}`);
   }

@@ -17,6 +17,11 @@ const provider = require('./provider.cjs');
 const habits   = require('./habits.cjs');
 const prompt   = require('./prompt.cjs');
 const markers  = require('./markers.cjs');
+/*
+ * ★ 「看屏幕」这个工具（2026-10-17 加的，方案乙 —— 他选工具调用而不是"标记 + 二次请求"）。
+ * ⚠️ 它内部自己做三级降级：对话模型 → 识图模型 → 固定文案「什么都没看见...」。
+ */
+const looktool = require('./looktool.cjs');
 
 /** 当前配置够不够发起一次对话 */
 function ready() {
@@ -38,13 +43,44 @@ async function reply(text, o = {}) {
   const gate = ready();
   if (!gate.ok) throw new Error(gate.why + ' —— 右键菜单 → API 接入');
 
+  /*
+   * ⚠️⚠️ **这三段的顺序是有讲究的**（2026-10-17 修的，清单 #10 #11）：
+   *
+   *   ① 先组提示词 —— 因为 `buildSystem` 要问 memory
+   *      「他上次跟你说话是多久前」（`timeSense`）和「今天说了几句」（`todayCount`）。
+   *      改前是**先 push、后组提示词**，于是这两个问题拿到的都是
+   *      「刚推的这句话」：
+   *        · 久别分支**一次都打不出来** —— 隔了 8 小时、3 天，提示词里
+   *          都写「你俩刚还在说话」；
+   *        · `todayCount` 每轮多报 1。
+   *      实测改前：上次说话 8 小时前，推之前是「已经 8.0 小时了（是昨天）」，
+   *      推之后变成「你俩刚还在说话。今天他已经跟你说过 1 句话。」
+   *
+   *   ② 再入库 —— 必须在组提示词之后、组 messages 之前。
+   *
+   *   ③ 最后组 messages —— 因为 `memory.recent()` 就是模型看到
+   *      「他这一句」的**唯一来源**。所以入库必须发生在 recent() 之前，
+   *      否则她收到的消息里根本没有他刚说的话（那就修出更大的毛病了）。
+   */
+  const sysPrompt = prompt.buildSystem({ userText: text, chain: o.chain || 'chat' });
   memory.push('user', text);
 
   const messages = [
-    { role: 'system', content: prompt.buildSystem({ userText: text, chain: o.chain || 'chat' }) },
-    // ⚠️ 用 `=== false` 不用 `!memShort` —— 老配置升级上来时这个键可能不存在，
-    //    取到 undefined，`!undefined` 会把对话历史整个清掉。
-    ...(c.memShort === false ? [] : memory.recent(c.memShortCount || 30)),
+    { role: 'system', content: sysPrompt },
+    /*
+     * ⚠️ 用 `=== false` 不用 `!memShort` —— 老配置升级上来时这个键可能不存在，
+     *    取到 undefined，`!undefined` 会把对话历史整个清掉。
+     *
+     * ⚠️⚠️ 但**关掉短期记忆 ≠ 把他这句话也丢掉**（2026-10-17 修的，清单 #10）。
+     *    改前这一支只给 `[system]` + 一个空列表 ⇒ **一条 user 消息都没有**，
+     *    模型根本没收到他这一轮，只能答非所问。
+     *    而 config 里那句注释写的是「关了就不带对话历史（**她只看得到今天这一句**）」——
+     *    代码跟注释是反的。实测改前：messages 里 roles = [system]，0 条 user。
+     *    ⇒ 关掉历史，就只带**当前这一句**。
+     */
+    ...(c.memShort === false
+      ? [{ role: 'user', content: text }]
+      : memory.recent(c.memShortCount || 30)),
   ];
 
   let out;
@@ -60,6 +96,12 @@ async function reply(text, o = {}) {
       thinkingStyle: c.thinkingStyle,
       onDelta: o.onDelta,
       signal: o.signal,
+      /*
+       * ★ 只有**聊天链**才挂「看屏幕」这个工具（2026-10-17 加的）。
+       *   ⚠️ 识屏 / 自言语 / 睡前那几条链**不该**有这个能力 —— 它们本来就看不见屏幕
+       *      （识屏链自己会截图），给了工具反而会让她在自言自语里突然说"我看看"。
+       */
+      tools: (o.chain || 'chat') === 'chat' ? [looktool.TOOL] : undefined,
     });
   } catch (err) {
     // ⚠️ 失败了要把刚记下的那句【撤回来】。
@@ -67,6 +109,64 @@ async function reply(text, o = {}) {
     //    会莫名其妙地道歉或者接错茬。
     memory.popLast('user');
     throw err;
+  }
+
+  /*
+   * ★★ 模型要「看屏幕」（2026-10-17 加的，方案乙）。
+   *
+   *   流程：它说要调 `look_screen` ⇒ 我们**真截一次屏**（三级降级在 looktool 里）
+   *         ⇒ 把描述当成 `role:'tool'` 的结果塞回去 ⇒ **再问一次**（这次不带 tools，
+   *         免得它看完又要看、循环起来）。
+   *
+   *   ⚠️ 描述**也进聊天记录**（他明确要求：看完的描述要进记录）。
+   *      挂在那条 assistant 消息的 `extra.look` 上 —— 她说的那句话照旧是正文，
+   *      而"她当时看到了什么"就在旁边，翻记录时能对上。
+   *   ⚠️ 工具调用本身不算"她开口"：`out.text` 可能是空的（只有 tool_calls），
+   *      所以下面剥标记/入库那段要拿**第二次**的 `out`。
+   */
+  let lookDesc = '';
+  if (Array.isArray(out.toolCalls) && out.toolCalls.length) {
+    const call = out.toolCalls.find((t) => t.name === 'look_screen');
+    if (call) {
+      try {
+        const r = await looktool.describe({ fromChat: true });
+        lookDesc = r.text || looktool.BLIND;
+      } catch (err) {
+        lookDesc = looktool.BLIND;
+      }
+      messages.push({
+        role: 'assistant',
+        content: out.text || null,
+        tool_calls: out.toolCalls.map((t) => ({
+          id: t.id || ('call_' + Math.random().toString(36).slice(2)),
+          type: 'function',
+          function: { name: t.name, arguments: t.args || '{}' },
+        })),
+      });
+      messages.push({
+        role: 'tool',
+        tool_call_id: call.id || '',
+        content: lookDesc,
+      });
+      try {
+        // ⚠️ 第二次**不再带 tools**：看完就该说话，别再让它循环调工具
+        out = await provider.chat({
+          base: c.apiBase,
+          key: c.apiKey,
+          model: c.model,
+          messages,
+          thinking: c.thinking,
+          reasoningEffort: c.thinkingDepth,
+          temperature: c.temperature,
+          thinkingStyle: c.thinkingStyle,
+          onDelta: o.onDelta,
+          signal: o.signal,
+        });
+      } catch (err) {
+        // 第二次失败：至少把她看到了什么说出来，别让他白等
+        out = { text: lookDesc, usage: out.usage, toolCalls: [] };
+      }
+    }
   }
 
   /*
@@ -85,7 +185,22 @@ async function reply(text, o = {}) {
   const parsed = markers.parse(out.text, { chain: o.chain || 'chat' });
   out.text = parsed.text;
 
-  memory.push('assistant', out.text);
+  /*
+   * ⚠️ 只吐了标记、没吐正文时**别入库**（2026-10-16 修的）。
+   *    否则 memory / chat.jsonl 里会攒下一堆 `content:""` 的空回合 ——
+   *    实测 `markers.parse('[心情 不错]')` 之后 text 是空串。
+   *    （提示词那边因为「开头必须是 user」会把它 shift 掉，所以看不见，
+   *      但记录确实落盘了，而且会挤占 history 的条数窗口。）
+   */
+  if (out.text) {
+    /*
+     * ⚠️ 用了「看屏幕」的那一轮，把**她看到的**一起存下来（`extra.look`）——
+     *    他要求「看完的描述要进聊天记录」。
+     *    正文仍然是她说的话；描述挂在旁边，翻记录时能对上"她当时看到了什么"，
+     *    而且**不污染对话流**（下一轮模型读到的是 `content`，不会把描述当成她说的话）。
+     */
+    memory.push('assistant', out.text, lookDesc ? { look: lookDesc } : {});
+  }
 
   // 这一轮梗库命中的热度，攒到现在一起落盘
   habits.flushHits();

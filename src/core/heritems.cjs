@@ -66,8 +66,16 @@ function readFile(file, key) {
 }
 function writeFile(file, o) { return store.writeJson(file, o); }
 
+/*
+ * 秒级时间戳**不够**（2026-10-16 修的）——
+ * 同一秒里加两条会撞 ID（实测：两条都是 `g20261015013620`），
+ * 之后按 id 去改状态 / 合并，改到的就是错的那一条。
+ * 补上毫秒 + 一个**进程内自增序号**：同一个毫秒里连发也不会撞。
+ */
+let idSeq = 0;
 function stampId(prefix, now = new Date()) {
-  return `${prefix}${T.day(now).replace(/-/g, '')}${T.pad2(now.getHours())}${T.pad2(now.getMinutes())}${T.pad2(now.getSeconds())}`;
+  const base = `${prefix}${T.day(now).replace(/-/g, '')}${T.pad2(now.getHours())}${T.pad2(now.getMinutes())}${T.pad2(now.getSeconds())}`;
+  return `${base}${String(now.getMilliseconds()).padStart(3, '0')}${String(++idSeq % 1000).padStart(3, '0')}`;
 }
 
 /**
@@ -88,8 +96,16 @@ function addWorry(o = {}) {
   const all = readFile(FILE_WORRY, 'worry');
   const now = new Date();
 
-  // 相似的合并 —— 同一件事她会反复注意到，那不是新心事，是同一件
+  /*
+   * 相似的合并 —— 同一件事她会反复注意到，那不是新心事，是同一件。
+   *
+   * ⚠️ 但**只跟还挂着的合并**（2026-10-16 修的）。
+   *    已经「放下了 / 解决了」的条目不该再往里吞东西：
+   *    她刚说「那件事我想通了」，下一轮又提一次类似的，
+   *    会被并进那条已解决的里 —— 看着像她从没放下过，而且那个新心事也消失了。
+   */
   const hit = all.worry.find((w) => w && w.about
+    && (!w.status || w.status === '挂着')
     && T.isLikelySame(w.about, about).same);
 
   if (hit) {
@@ -123,7 +139,14 @@ function addWorry(o = {}) {
   // ⚠️ 满了之后从**最老的「小事」**开始扔 —— 宁可少一条鸡毛蒜皮，
   //    也不能把「重要」的挤掉
   if (all.worry.length > WORRY_MAX) {
-    const i = all.worry.findIndex((w) => w && w.rank === '小事');
+    /*
+     * ⚠️ 淘汰顺序：**已经放下的** → 「小事」 → 最后才动最老的（2026-10-16 修的）。
+     *    原来只找「小事」，找不到就直接 `splice(0,1)` —— 那删掉的是**最老的那条**，
+     *    很可能正是「重要事」。跟上面那句「不能把重要的挤掉」正好相反。
+     *    实测：60 条全是「重要」时再加一条，最老的「重要事0」被删了。
+     */
+    let i = all.worry.findIndex((w) => w && w.status && w.status !== '挂着');
+    if (i < 0) i = all.worry.findIndex((w) => w && w.rank === '小事');
     all.worry.splice(i >= 0 ? i : 0, 1);
   }
 

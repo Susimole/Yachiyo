@@ -57,6 +57,30 @@ let busyCheck = null;
 let sleepCheck = null;
 
 /**
+ * **他那边正在说话吗** —— 由主进程注入（`() => !!busy`，见 main/index.cjs）。
+ *
+ * ⚠️ 这是 2026-10-17 补的（清单 #42），跟上面那个 `busyCheck` **不是一回事**：
+ *    · `busyCheck` 问的是「**气泡里有没有字**」—— 主进程去主窗口问 `#bubble`，
+ *      而聊天窗（浮层里那个）的流式回复**根本不碰那个气泡** ⇒ 对它恒为 false；
+ *    · 这个问的是「**她这一轮回复跑完没有**」。
+ *    缺了它，他正在聊天窗跟她说话时，自言语照样挑那一刻开口 ——
+ *    两边的话在同一个气泡里交错。
+ *    实测改前：`tick()` 返回「说一句」而且**真发了请求**。
+ */
+let chatBusyCheck = null;
+
+/**
+ * 他最近一次开口是什么时候（毫秒时间戳）。
+ *
+ * ⚠️ 故意**只放内存、不落盘**：它管的是"他刚说完话这几分钟先别插嘴"，
+ *    重启本来就该重新开始数（而且重启后也不会立刻冒一句）。
+ */
+let lastUserSpokeAt = 0;
+
+/** 他刚开过口，这几分钟里自言语先让一让（清单 #42） */
+const SPOKE_QUIET_MS = 3 * 60 * 1000;
+
+/**
  * 她说完之后叫一声 —— 主进程拿它记「我说过什么」。
  *
  * ⚠️ 自言语**不走 `runChat`**（那是"你问她答"那条路），
@@ -81,6 +105,11 @@ function attach(o = {}) {
   if (typeof o.busy === 'function') busyCheck = o.busy;
   if (typeof o.sleeping === 'function') sleepCheck = o.sleeping;
   if (typeof o.onSaid === 'function') onSaid = o.onSaid;
+  /*
+   * ⚠️ `chatBusy` 是 2026-10-17 加的（清单 #42）—— 见上面那个变量的注释：
+   *    它和 `busy` 是两件不同的事，别拿一个凑合。
+   */
+  if (typeof o.chatBusy === 'function') chatBusyCheck = o.chatBusy;
 }
 
 /* ── 持久状态 ─────────────────────────────────────────── */
@@ -254,9 +283,17 @@ async function run(now = new Date()) {
      *      不带人格就不是她了。
      */
     const useMem = cfg.get('SelfTalkUseMemory') !== false;
+    /*
+     * ⚠️ 时间开关在**两条分支里都要起作用**（2026-10-16 修的）。
+     *    `SelfTalkUseTime` 以前只管 `context()`（上面那一处），
+     *    可系统提示词是**另外拼的** —— 时间块在 `prompt.buildSystem()` 里
+     *    无条件追加、下面那条手拼的分支也写死了 `timeBlock(now)`，
+     *    于是关掉开关她照样知道现在几点。
+     */
+    const useTime = cfg.get('SelfTalkUseTime') !== false;
     const sysPrompt = useMem
-      ? prompt.buildSystem({ userText: key, now })
-      : [prompt.personaBlock(), prompt.timeBlock(now)].filter(Boolean).join(T.GAP);
+      ? prompt.buildSystem({ userText: key, now, noTime: !useTime })
+      : [prompt.personaBlock(), useTime ? prompt.timeBlock(now) : ''].filter(Boolean).join(T.GAP);
 
     const r = await provider.chat({
       base: c.apiBase, key: c.apiKey, model: c.model,
@@ -291,7 +328,8 @@ async function run(now = new Date()) {
     }
 
     // ⚠️ 太长的不要 —— 自言自语不是开讲座（旧工程截到 200）
-    const out = text.length > 200 ? text.slice(0, 200) : text;
+    // ⚠️ 用 T.cut 按**码点**截 —— `.slice(0,200)` 会把 emoji 劈成半个字符
+    const out = T.cut(text, 200);
 
     if (typeof say === 'function') {
       // ⚠️ 带上这条链**自己的**气泡时长（配置键 SelfTalkBubbleSeconds）
@@ -360,6 +398,22 @@ function tick(idleMin, now = new Date()) {
   // ③ 气泡忙 → 让给这一轮
   try { if (typeof busyCheck === 'function' && busyCheck()) return '气泡正忙，让一轮'; } catch { }
 
+  /*
+   * ③' **他那边正在跟她说话** → 让一轮（2026-10-17 加的，清单 #42）。
+   *     这一道问的是"她这轮回复跑完没有"，跟上面那道"气泡里有没有字"
+   *     是两件事 —— 聊天窗的流式回复不碰 `#bubble`，上面那道闸对它是瞎的。
+   *     放在 `schedule(now)` **之后**（跟别的闸一样）：让一轮就是真让掉了，
+   *     不会"他一停她就立刻补一句"。
+   */
+  try { if (typeof chatBusyCheck === 'function' && chatBusyCheck()) return '他正在聊，让一轮'; } catch { }
+
+  /*
+   * ③'' **他刚开过口** → 也先让一轮。
+   *      他的消息才落进历史几秒，这时候她插一句最容易接错茬。
+   *      ⚠️ 只看"多久以前"，不看内容 —— 内存变量，重启归零。
+   */
+  if (lastUserSpokeAt && now.getTime() - lastUserSpokeAt < SPOKE_QUIET_MS) return '他刚说过话，让一轮';
+
   // ⑤ 说
   run(now).catch((e) => log.error('自言语', '异步那趟出错：' + e.message));
   return '说一句';
@@ -372,13 +426,20 @@ module.exports = {
   attach, tick, run, context, factor, schedule, restoreSchedule, recents,
   isBusy: () => busy,
   nextAt,
-  /** 他说话了 —— 自言语让一让，别跟他抢（也顺手压一下复读） */
+  /**
+   * 他说话了 —— 自言语让一让，别跟他抢（也顺手压一下复读）。
+   *
+   * ⚠️ 改前这里**只 addRecent**（那只管"别复读"），压根没碰"让路"这件事 ——
+   *    注释写着「让一让」，代码一步没让（清单 #42）。
+   *    现在真记一笔时刻，tick 里那道「他刚说过话」的闸才拦得住。
+   */
   noteUserSpoke(text) {
     const t = String(text || '').trim();
     if (t) addRecent(t);
+    lastUserSpokeAt = Date.now();
   },
   /** 自检用：直接把下次到点写成某个时刻（走盘，跟真实路径同一条） */
   _setNextAt(t) { const st = readState(); st.nextAt = Number(t) || 0; writeState(st); },
-  _reset() { busy = false; say = null; busyCheck = null; sleepCheck = null; writeState({}); },
+  _reset() { busy = false; say = null; busyCheck = null; chatBusyCheck = null; sleepCheck = null; lastUserSpokeAt = 0; writeState({}); },
   _state: () => ({ busy, nextAt: nextAt(), nextIn: nextAt() ? Math.round((nextAt() - Date.now()) / 60000) : null, ...readState() }),
 };
