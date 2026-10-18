@@ -207,6 +207,36 @@ function startCursorWatch() {
       const b = win.getBounds();
       const p = screen.getCursorScreenPoint();
       const inside = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+      /*
+       * ★★★ 2026-10-18：**每一拍都把光标位置推给页面**（不只是"离开"那一下）。
+       *
+       *   为什么（#6 的最后一个根因，真机日志实锤）：
+       *     `setIgnoreMouseEvents(true,{forward:true})` 在 Windows 上**只转发了
+       *     `mouseup`，`mousemove` 会断**（实测：t=46.457 之后 move 一条都没有，
+       *     可 up 一直有到 52s）。而页面**靠 mousemove 更新"鼠标在哪"** ——
+       *     move 一断，`lastMouse` 就冻住，页面永远判"不在她身上"⇒ 穿透永远开着
+       *     ⇒ 再也点不着。**这是死锁，自己解不开。**
+       *
+       *   ⇒ 改由主进程**主动喂坐标**：它每 120ms 本来就在查（`screen.getCursorScreenPoint`），
+       *     多推一个坐标几乎零成本（8 条/秒、两个数字）。
+       *   ⚠️ 坐标是**屏幕 DIP**，页面那边减掉 `window.screenX/screenY` 就是 client 坐标。
+       *   ⚠️ 这仍然**不改穿透** —— 主进程只喂"鼠标在哪"，收不收回还是页面说了算（铁律不破）。
+       */
+      /*
+       * ⚠️ 发的是**相对比例**，不是绝对坐标 —— 2026-10-18 实测踩的坑：
+       *     `screen.getCursorScreenPoint()` 和页面 client 坐标**不是一个单位**
+       *     （中间夹着 125% 缩放 + 窗口原点），直接减会得到离谱的数（实测差 153~474px）。
+       *     发 0~1 的比例，页面乘自己的 `innerWidth/innerHeight`，**单位问题自动消失**。
+       */
+      win.webContents.send('win:cursor-pos', {
+        rx: b.width ? (p.x - b.x) / b.width : -1,
+        ry: b.height ? (p.y - b.y) / b.height : -1,
+        inside,
+        /* 诊断用：把原始数字一并带上，单位对不上一眼就看出来 */
+        raw: { x: p.x, y: p.y },
+        bounds: { x: b.x, y: b.y, w: b.width, h: b.height },
+        sf: (screen.getDisplayNearestPoint(p) || {}).scaleFactor || 1,
+      });
       if (inside === cursorWasInside) return;
       cursorWasInside = inside;
       if (!inside) {

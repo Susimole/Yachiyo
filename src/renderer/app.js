@@ -269,6 +269,32 @@ function updateMask() {
   maskData = fresh;
 }
 
+/*
+ * ★★★ 2026-10-18：**收穿透的判定改用整块矩形** —— #6 的最后一块。
+ *
+ *   真机证据（他亲手点 + 120ms 精度盯系统 `WS_EX_TRANSPARENT`）：
+ *     17:17:02.5 显示回来 → transparent=0（能点）
+ *     17:17:06.3 → transparent=1（穿过去了，**持续 3 秒**）
+ *     17:17:09.3 → 0（收回，只值 0.4 秒）
+ *     17:17:09.7 → 1（又穿了）—— 他按下去就落在这段
+ *
+ *   为什么：`hitPet()` 用 **48×48 的 alpha 掩码**（带邻居搜索）判"在不在她身上"。
+ *   她**呼吸/走路**时 `pos` 每帧都在动，掩码又是画完才采样的，
+ *   鼠标压在发梢/裙角/脚边时「中/不中」会来回跳。一次判"没中" ⇒ 320ms 后就开穿透。
+ *   这也正是他 10-17 那句「她睡觉时才互动」的成因 —— 睡着不动，判定就稳。
+ *
+ *   ⇒ **开不开穿透只看"鼠标在不在她这块矩形里"**：矩形跟着她走，但她**呼吸时纹丝不动**，
+ *     判定稳如老狗。alpha 掩码继续留给"是不是真戳在她身上"（右键菜单那类判定用）。
+ *   ⚠️ 代价：她矩形里的透明角落也归她（点那儿不会穿到桌面）。她 460×460，
+ *      整条带 2048×560 ⇒ 最多占 18%，换来"点得着"，值。
+ */
+function nearPet(cx, cy) {
+  const w = petW();
+  const pad = 4;
+  return cx >= pos.x - pad && cx <= pos.x + w + pad
+      && cy >= pos.y - pad && cy <= pos.y + w + pad;
+}
+
 function hitPet(cx, cy) {
   const w = petW();
   const u = (cx - pos.x) / w;
@@ -292,6 +318,11 @@ function hitPet(cx, cy) {
 
 let wantMouse = false;
 let lastMouse = { x: -1, y: -1 };
+/* ★ 主进程喂来的坐标 vs 真实 mousemove 坐标 —— 比较用，见下面的 debug() */
+let feedLast = null;
+let realMove = null;
+let feedErr = null;
+let feedRaw = null;
 
 /*
  * ★ 诊断计数（2026-10-18 加的，为 #6）。
@@ -341,6 +372,53 @@ function reassertMouse(nowMs) {
   sendMouseMode();
 }
 
+/*
+ * ★★★ 2026-10-18：**不允许"一次没中就立刻开门"** —— #6 的真正根因在这里。
+ *
+ *   真机证据（他亲手点 + 系统层面盯 WS_EX_TRANSPARENT，三份日志对到毫秒）：
+ *     44.491 页面说"收回穿透" → 44.540 系统层面真变成 transparent=0   ✓ 传输没问题
+ *     44.747 「被戳了一下」        → 只有 up 进来了，**down 一条都没有**
+ *     45.179 页面说"打开穿透"     → 45.210 系统层面真变了
+ *     45.506 又收回 / 45.720 又打开 —— **300ms 内反复开合**
+ *   ⇒ 他按下的那一瞬，窗口正好在"打开穿透"的那半拍里，down 直接穿给桌面了。
+ *
+ *   为什么判定会抖：`hitPet()` 用的是 48×48 的 alpha 掩码（加邻居搜索），
+ *   她**呼吸/走路**时 `pos` 一直在动，鼠标压在边缘（发梢、裙角）时
+ *   「中/不中」就会来回跳。一次不中 ⇒ 立刻开门 ⇒ 下一次按下就废了。
+ *   这也解释了他 10-17 说的那句「她睡觉时才互动」—— 睡着不动，判定就稳。
+ *
+ *   ⇒ 开穿透要**连续 OFF_GRACE_MS 都不中**才开；中途只要又中了就取消。
+ *     关门（收回穿透）仍然**立刻**做 —— 宁可多要一次鼠标，也不要"点不着"。
+ *   ⚠️ 光标真的离开整条带时（主进程的 `win:cursor-out`）走 `force`：
+ *      那种情况等不到 mousemove，必须按时间硬开，否则桌面点不动。
+ */
+const OFF_GRACE_MS = 320;
+let offTimer = null;
+let offForce = false;
+let offPendingSince = 0;
+
+function openPassthroughSoon(force) {
+  offForce = offForce || !!force;
+  if (offTimer) return;                     // 已经在等了
+  offPendingSince = performance.now();
+  offTimer = setTimeout(() => {
+    offTimer = null;
+    const hard = offForce;
+    offForce = false;
+    if (!hard) {
+      // 到点了再判一次：万一这 320ms 里又飘进她矩形了，就别开
+      const on = lastMouse.x >= 0 && nearPet(lastMouse.x, lastMouse.y);
+      if (on) return;
+    }
+    wantInteractive(false);
+  }, OFF_GRACE_MS);
+}
+
+function cancelPassthrough() {
+  offForce = false;
+  if (offTimer) { clearTimeout(offTimer); offTimer = null; }
+}
+
 /**
  * 主窗口收不收鼠标 —— **只取决于鼠标是不是真的压在她身上**。
  *
@@ -355,8 +433,10 @@ function reassertMouse(nowMs) {
  */
 function refreshMouse(e) {
   if (e) lastMouse = { x: e.clientX, y: e.clientY };
-  if (dragging) { wantInteractive(true); return; }
-  wantInteractive(lastMouse.x >= 0 ? hitPet(lastMouse.x, lastMouse.y) : false);
+  if (dragging) { cancelPassthrough(); wantInteractive(true); return; }
+  const on = lastMouse.x >= 0 ? nearPet(lastMouse.x, lastMouse.y) : false;
+  if (on) { cancelPassthrough(); wantInteractive(true); }   // 进了她的矩形就**立刻**收回穿透
+  else openPassthroughSoon(false);                          // 出去了先等等，别急着开门
 }
 
 /*
@@ -449,6 +529,19 @@ cvs.addEventListener('mousedown', (e) => {
 window.addEventListener('mousemove', (e) => {
   mouseIdle = 0;
   lastAct = performance.now();
+  /*
+   * ★ 2026-10-18：留一份**真实 mousemove** 的坐标，专门跟主进程喂过来的那个比。
+   *   单位要是对不上（跨进程 + 125% 缩放），差个一两百像素这里立刻看得出来。
+   */
+  realMove = { x: e.clientX, y: e.clientY, t: performance.now() };
+  /*
+   * ⚠️ 只比「光标在带里」的那些样本 —— 光标跑出带子时主进程给的 rx/ry 会是负数，
+   *    乘出来是个离谱的坐标，算进最大偏差就成了假警报（实测 512px，全是这种）。
+   */
+  if (feedLast && feedLast.inside) {
+    const d = Math.max(Math.abs(realMove.x - feedLast.x), Math.abs(realMove.y - feedLast.y));
+    feedErr = Math.max(feedErr || 0, Math.round(d));
+  }
 
   /*
    * ⚠️⚠️ 传进去之前要**除以缩放倍数 k**（2026-10-16 修的）。
@@ -1173,10 +1266,37 @@ async function boot() {
   });
 
   /*
-   * 主进程说「光标出了窗口那条带」—— **这才真的**把穿透打开。
-   * 这是现在唯一的"打开穿透"来源；页面对 `mouseleave` 只切眼动，不碰穿透。
+   * 主进程说「光标出了窗口那条带」—— 这时候等不到 mousemove，
+   * 必须按时间**硬开**穿透，否则桌面点不动（见 openPassthroughSoon 的 force）。
+   * 页面对 `mouseleave` 只切眼动，不碰穿透。
    */
-  window.yachiyo.on('win:cursor-out', () => { wantInteractive(false); });
+  window.yachiyo.on('win:cursor-out', () => { openPassthroughSoon(true); });
+
+  /*
+   * ★★★ 主进程每 120ms 喂一次光标位置（2026-10-18，解 #6 的死锁）。
+   *
+   *   为什么必须走这条路：`setIgnoreMouseEvents(true,{forward:true})` 在 Windows 上
+   *   **只转发 mouseup，不转发 mousemove**（真机日志：move 在 t=46.4s 之后一条都没有，
+   *   而 up 一直有到 52s）。页面靠 mousemove 更新 `lastMouse`，一断就冻住
+   *   ⇒ 永远判"不在她身上" ⇒ 穿透永远开着 ⇒ **再也点不着，而且自己解不开**。
+   *
+   *   ⇒ 位置改由主进程喂（它的 `startCursorWatch` 每 120ms 本来就在查光标）。
+   *     ⚠️ 主进程**只喂坐标、不改穿透** —— 收不收回仍然只有这里说了算（铁律不破）。
+   *     ⚠️ 主进程给的是**屏幕 DIP** 坐标，减掉 `window.screenX/screenY` 才是 client 坐标。
+   */
+  window.yachiyo.on('win:cursor-pos', (p) => {
+    if (!p || typeof p.rx !== 'number') return;
+    /* ⚠️ 主进程给的是 0~1 的比例（见那边的注释：绝对坐标跨进程单位对不上） */
+    lastMouse = {
+      x: Math.round(p.rx * window.innerWidth),
+      y: Math.round(p.ry * window.innerHeight),
+    };
+    feedLast = { x: lastMouse.x, y: lastMouse.y, t: performance.now(), inside: !!p.inside };
+    feedRaw = { raw: p.raw, bounds: p.bounds, sf: p.sf, rx: p.rx, ry: p.ry,
+                iw: window.innerWidth, ih: window.innerHeight };
+    if (!p.inside) { openPassthroughSoon(true); return; }
+    refreshMouse(null);          // 用新坐标重算一次（不传事件，别再覆盖 lastMouse）
+  });
 
   /*
    * ★★ 主窗口被显示了（2026-10-18 加的，为 #6「隐藏后再显示，左键拖不动」）。
@@ -1298,6 +1418,7 @@ async function boot() {
       //    这儿问不出来。要查它们得另开一个 CDP target（自检里做了）。
       mask: !!maskData,
       hit: lastMouse.x >= 0 ? hitPet(lastMouse.x, lastMouse.y) : null,
+      near: lastMouse.x >= 0 ? nearPet(lastMouse.x, lastMouse.y) : null,
       pos: { ...pos },
       /*
        * ★ 穿透诊断（2026-10-18）。#6 查不出来就是因为缺这几个数：
@@ -1308,6 +1429,19 @@ async function boot() {
       reasserts: reassertCount,
       showns: shownCount,
       lastReassertAt: lastReassert,
+      /*
+       * ★ 开穿透的「待发」状态（2026-10-18）：`pending=true` 说明这 320ms 内
+       *   判定为"没中"，但还没真的开穿透。点不着的时候先看这个 ——
+       *   `pending` 卡住不动 = 判定一直不中（真不在她身上）；
+       *   频繁跳 true/false = 掩码判定在抖（那就是 #6 的形状）。
+       */
+      pending: !!offTimer,
+      pendingSince: offPendingSince,
+      /* ★ 坐标系对不对：`feedErr` 是「喂来的坐标」和「真实 mousemove」的最大偏差 */
+      feed: feedLast ? { x: feedLast.x, y: feedLast.y } : null,
+      feedRaw,
+      real: realMove ? { x: realMove.x, y: realMove.y } : null,
+      feedErr,
     }),
     speak,
   };

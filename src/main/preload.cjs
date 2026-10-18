@@ -310,6 +310,13 @@ contextBridge.exposeInMainWorld('yachiyo', {
        */
       'win:shown',
       /*
+       * ★★ 主进程每 120ms 喂一次光标位置（2026-10-18，为 #6 的死锁）。
+       *   `forward:true` 只转发 up、不转发 move —— 光靠 mousemove 更新"鼠标在哪"，
+       *   一旦 move 断了，页面永远判"不在她身上"，穿透永远开着，再也点不着。
+       * ⚠️ 必须登记，不登记会被静默丢掉（这个 on() 的老毛病）。
+       */
+      'win:cursor-pos',
+      /*
        * ★ 他开始 / 结束打游戏了（全屏 + 进程检测，见 core/gamedetect.cjs）。
        * ⚠️ 必须登记 —— 页面靠它把她钉在「坐着」，漏了就是"打游戏时她还在来回走"。
        */
