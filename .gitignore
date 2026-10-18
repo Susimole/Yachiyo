@@ -64,3 +64,6 @@ rig.json.bak*
 
 # 调试期 HUD 参考图（无代码引用，只留本地）
 _hud/
+
+# ripwire 的质量基线快照（265 KB，随时能用 --quality-baseline 重生成，不进仓库）
+.ripwire_quality_baseline
