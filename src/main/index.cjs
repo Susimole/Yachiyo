@@ -41,6 +41,7 @@ const autoexit = require('../core/autoexit.cjs');
 const backup   = require('../core/backup.cjs');
 const profiletool = require('../core/profiletool.cjs');
 const autostart = require('../core/autostart.cjs');
+const fonts = require('./fonts.cjs');
 const websearch = require('../core/websearch.cjs');
 const capture = require('../core/capture.cjs');
 const peeker  = require('../core/peeker.cjs');
@@ -1466,57 +1467,11 @@ ipcMain.handle('ai:models', async (_e, o) => {
 /* ============================================================
    字体
    ============================================================
-   ⚠️⚠️ 为什么要绕这么大一圈从主进程读字节，而不是页面上直接
-        `@font-face { src: url('./assets/fonts/x.ttf') }`：
-
-        实测过 —— **file:// 下 Chromium 直接把字体加载拒了**。
-        同一次实验里 `document.fonts` 报的是 `ZXFYunYuan: error`，
-        `document.fonts.check()` 全程 false，两行文字宽度一模一样
-        （说明根本没换字体），而且**不报错、不弹窗**。
-
-        根因：字体请求是 **CORS 模式**的，而 `file://` 是不透明源，
-        自己加载自己也得过 CORS —— 过不了。
-
-        ⇒ 换一条根本不过网络的路径：主进程 `readFileSync` 把字节通过 IPC
-          递给页面，页面用 `new FontFace(name, bytes)` 手搓一个字体加进去。
-          ArrayBuffer 来源的 FontFace **不做任何 fetch**，CORS 无从谈起。
-
-   ⚠️ 文件名要**掐死在这三个后缀**里，而且必须落在 fonts 目录内 ——
-      这是从「页面」递过来的字符串，不校验就等于开了个任意文件读取的口子。
+   ⚠️ 整块（含上面那段 CORS 的血泪说明）2026-10-18 拆到 ./fonts.cjs 了。
+   这里只留一行注册 —— 主进程不该再往里塞东西。
 */
-const FONT_EXT = ['.ttf', '.otf', '.ttc'];
-
-function fontFile(name) {
-  const base = path.basename(String(name || ''));
-  if (!FONT_EXT.includes(path.extname(base).toLowerCase())) return null;
-  const full = path.join(cfg.FONTS, base);
-  if (path.dirname(full) !== cfg.FONTS) return null;      // 双保险：不许跑出去
-  return fs.existsSync(full) ? full : null;
-}
-
-/** 有哪些字体可选 —— 设置面板那一行的下拉就是它填的 */
-ipcMain.handle('font:list', () => {
-  try {
-    if (!fs.existsSync(cfg.FONTS)) return [];
-    return fs.readdirSync(cfg.FONTS)
-      .filter((f) => FONT_EXT.includes(path.extname(f).toLowerCase()))
-      .sort();
-  } catch { return []; }
-});
-
-/** 把字体字节递过去（页面拿去 new FontFace） */
-ipcMain.handle('font:bytes', (_e, name) => {
-  const p = fontFile(name);
-  if (!p) return { ok: false, error: '找不到这个字体文件' };
-  try {
-    return { ok: true, name: path.basename(p), bytes: fs.readFileSync(p) };
-  } catch (err) {
-    return { ok: false, error: '读不出来：' + err.message };
-  }
-});
-
-/** 字体目录在哪 —— 设置面板里告诉他「往哪儿丢字体」 */
-ipcMain.handle('font:dir', () => cfg.FONTS);
+/* 字体那一块（FONT_EXT / fontFile / 三个 IPC）2026-10-18 拆到 ./fonts.cjs 了 */
+fonts.register(ipcMain, cfg);
 
 // 窗口的真实状态 —— 自检要拿它对账「页面改了配置，主进程到底落没落地」
 ipcMain.handle('win:state', () => {
