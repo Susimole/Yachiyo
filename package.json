@@ -8,6 +8,8 @@
   "scripts": {
     "start": "node scripts/start.cjs",
     "serve": "node scripts/serve.cjs",
+    "test": "node tests/run.cjs",
+    "test:all": "node tests/run.cjs --all",
     "build": "electron-builder --win nsis",
     "build:dir": "electron-builder --win --dir"
   },

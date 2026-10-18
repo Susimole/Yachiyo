@@ -23,6 +23,7 @@ _ignore.log
 _page.log
 _log-*.txt
 _selfcheck-home*/
+tests/.homes/
 _selfcheck-*.json
 *.tsbuildinfo
 # 探针的出图目录（probe-*.cjs 开头就 rmSync 重建，别进仓库）
