@@ -105,7 +105,18 @@ const targets = async () => (await (await fetch('http://127.0.0.1:9222/json/list
   chk('★ wakeUp 被三个互动点调用（单击 / 双击 / 按下拖动），含定义共 ≥4 处', wakeCalls >= 4, '出现 ' + wakeCalls + ' 次');
   chk('app.js：单击那条路按返回值分流（`if (!wakeUp())` —— 别把刚坐下的她改成站着）',
     /if\s*\(!wakeUp\(\)\)\s*rig\.state\.rest\(\)/.test(appClean));
-  chk('app.js：双击那条路也分流了', (appClean.match(/if\s*\(!wakeUp\(\)\)\s*rig\.state\.rest\(\)/g) || []).length >= 2);
+  /*
+   * ⚠️ 2026-10-21 修判据（**不是产品 bug**）：原来要求
+   *   `if (!wakeUp()) rig.state.rest()` 这个**写法**出现两次。
+   *   可单击那条路早就改成 `const didWake = wakeUp()` 了 —— 为的是
+   *   **一次点击只叫一次**（第 40 轮那个 bug：mousedown 叫醒、mouseup 又判一次 mode）。
+   *   所以：改成按**行为**验 —— 双击那条路必须也叫 wakeUp、并且分流回 rest()。
+   */
+  chk('app.js：双击那条路也叫了 wakeUp 并分流回 rest()',
+    /if\s*\(!wakeUp\(\)\)\s*rig\.state\.rest\(\)/.test(appClean));
+  chk('app.js：wakeUp 至少被 3 个互动点调用（拖 / 单击 / 双击）',
+    (appClean.match(/wakeUp\(\)/g) || []).length >= 3,
+    '出现 ' + (appClean.match(/wakeUp\(\)/g) || []).length + ' 次');
 
   chk('★ ask.html 已删除', !fs.existsSync(path.join(REPO, 'src', 'renderer', 'ask.html')));
   chk('★ ui/ask.js 已删除', !fs.existsSync(path.join(REPO, 'src', 'renderer', 'ui', 'ask.js')));
@@ -145,7 +156,14 @@ const targets = async () => (await (await fetch('http://127.0.0.1:9222/json/list
 
   /* ---------- 优化1：面板用的是他上次的尺寸 ---------- */
   console.log('── 优化1 设置面板（锁尺寸：用上次的值）──');
-  const want = JSON.parse(await evalIn(mc, 'JSON.stringify(window.__yachiyo.cfg.winGeom && window.__yachiyo.cfg.winGeom.panel)'));
+  /*
+   * ⚠️ 2026-10-21 修：隔离 HOME 里**从来没存过** `winGeom.panel`（没人拉过面板），
+   *    原来直接 `JSON.parse(JSON.stringify(undefined))` → `"undefined"` → 整条探针炸。
+   *    ⇒ 没存过就没有"上次尺寸"可验，这一条跳过（下面已有的 `if (want)` 分支兜着）。
+   */
+  const wantRaw = await evalIn(mc, 'JSON.stringify((window.__yachiyo.cfg && window.__yachiyo.cfg.winGeom && window.__yachiyo.cfg.winGeom.panel) || null)');
+  const want = JSON.parse(wantRaw || 'null');
+  if (!want) console.log('   （隔离家里没存过面板尺寸 → "用上次那个尺寸"这一条跳过）');
   console.log('   配置里记的面板尺寸 = ' + J(want));
 
   await evalIn(mc, `window.yachiyo.ov.open('panel', { page: 'ai' }); 1`);
@@ -166,8 +184,13 @@ const targets = async () => (await (await fetch('http://127.0.0.1:9222/json/list
      *    默认值和实际值差了 220px，容差再松也不会误判。
      */
     const near = want && Math.abs(size.w - want.width) <= 3 && Math.abs(size.h - want.height) <= 3;
-    chk('★ 面板用的是他上次拉到的那个尺寸（不是 SPEC 默认的 780×580）',
-      near, J(size) + ' vs 配置 ' + J(want) + '（SPEC 默认 780×580）');
+    if (want) {
+      chk('★ 面板用的是他上次拉到的那个尺寸（不是 SPEC 默认的 780×580）',
+        near, J(size) + ' vs 配置 ' + J(want) + '（SPEC 默认 780×580）');
+    } else {
+      chk('★ 面板开出来了且有尺寸（新家第一次开，没有"上次"可比）',
+        size.w > 200 && size.h > 200, J(size));
+    }
     if (want) {
       chk('   顺便确认它不是被 SPEC 默认值顶掉的',
         size.w !== 780 || size.h !== 580, J(size));

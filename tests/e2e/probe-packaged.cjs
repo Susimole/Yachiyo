@@ -28,7 +28,7 @@ const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 
-const EXE = path.join(__dirname, '..', 'dist', 'win-unpacked', 'Yachiyo.exe');
+const EXE = path.join(__dirname, '..', '..', 'dist', 'win-unpacked', 'Yachiyo.exe');
 const HOME = path.join(os.tmpdir(), 'yachiyo-pkg-probe');
 const PORT = 9385;
 
@@ -103,7 +103,18 @@ async function main() {
   console.log('');
   console.log('=== ① API 桥 ===');
   const keys = await M('Object.getOwnPropertyNames(window.yachiyo||{}).join(",")');
-  chk('window.yachiyo 在，10 个键齐', keys === 'dev,cfg,win,chat,font,usage,weather,ai,rig,ov,on', keys);
+  /*
+   * ⚠️ 2026-10-21 修判据（**不是产品 bug**）：原来把整串键名写死（当时 10 个），
+   *    后来加了 `providers` / `vision` 就永远红 —— 可"多一个键"不等于坏了。
+   *    ⇒ 改成**按名字验该在的都在**，多出来的不管（那才是正常的演进）。
+   */
+  {
+    const have = String(keys || '').split(',').filter(Boolean);
+    const need = ['dev', 'cfg', 'win', 'chat', 'font', 'usage', 'weather', 'ai', 'rig', 'ov', 'on', 'pet'];
+    const miss = need.filter((k) => !have.includes(k));
+    chk('window.yachiyo 在，该有的键都在（' + need.length + ' 个，实测共 ' + have.length + ' 个）',
+      miss.length === 0, miss.length ? ('缺：' + miss.join(',')) : keys);
+  }
 
   console.log('');
   console.log('=== ② 正式版不许有后门 ===');

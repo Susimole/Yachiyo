@@ -123,7 +123,13 @@ async function evalIn(c, expr) {
       const g = (el) => el ? getComputedStyle(el).userSelect || getComputedStyle(el).webkitUserSelect : null;
       return { bub: g(b), sys: g(s), input: g(t), bar: g(document.querySelector('.bar')) };
     })())`));
-    chk('★ 消息气泡的计算样式 user-select = text（能选中复制了）', style.bub === 'text', J(style));
+    /*
+     * ⚠️ 2026-10-21 修：`.c-bub` **只有聊过天才有**。探针跑在隔离 HOME 里，
+     *    历史是空的 → `bub:null` → 这条永远红。不是产品坏了，是判据没考虑空历史。
+     *    ⇒ 有气泡就查气泡，没气泡就用系统提示那一行（`.c-sys`）验同一条 CSS 规则。
+     */
+    chk('★ 消息区（气泡或系统提示）的计算样式 user-select = text（能选中复制了）',
+      (style.bub || style.sys) === 'text', J(style));
     chk('输入框也是 text', style.input === 'text', J(style.input));
     chk('顶部拖动栏没被开成可选（拖窗口不会拖出选中残影）', style.bar !== 'text', J(style.bar));
 

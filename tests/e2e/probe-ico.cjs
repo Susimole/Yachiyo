@@ -28,7 +28,7 @@ const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 
-const EXE = path.join(__dirname, '..', 'dist', 'win-unpacked', 'Yachiyo.exe');
+const EXE = path.join(__dirname, '..', '..', 'dist', 'win-unpacked', 'Yachiyo.exe');
 const HOME = path.join(os.tmpdir(), 'yachiyo-ico-probe');
 const PORT = 9361;
 

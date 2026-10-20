@@ -25,7 +25,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const OUT = 'D:\\AI_work\\留痕\\稿子-批次C';
-const CFG = path.join(process.env.APPDATA || '', 'Yachiyo', 'config.json');
+/*
+ * ⚠️ 2026-10-21 修：原来写死 `%APPDATA%\Yachiyo\config.json`（**他真实那份**）。
+ *   可探针跑在隔离 HOME（`YACHIYO_HOME`）里，切预设改的是隔离那份 ⇒ 永远红。
+ *   ⇒ 有 YACHIYO_HOME 就跟它走，没有才回落到 APPDATA。
+ */
+const HOME_DIR = process.env.YACHIYO_HOME || path.join(process.env.APPDATA || '', 'Yachiyo');
+const CFG = path.join(HOME_DIR, 'config.json');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const J = (o) => JSON.stringify(o);
 
@@ -129,7 +135,7 @@ const goto = (c, name) => ev(c, `(() => {
   chk('★ 切到 Kimi 后，config.json 的 apiBase 变成 moonshot 的地址',
     /moonshot/.test(String(after.apiBase)), after.apiBase);
   chk('★ DeepSeek 的 key 没丢（还在 providers.json 里）',
-    fs.existsSync(path.join(process.env.APPDATA || '', 'Yachiyo', 'data', 'providers.json')));
+    fs.existsSync(path.join(HOME_DIR, 'data', 'providers.json')));
 
   const shown = JSON.parse(await ev(pc, `JSON.stringify((() => {
     const g = (kw) => { const r = [...document.querySelectorAll('#pMain .row')].find((x) => ((x.querySelector('.label') || {}).textContent || '').startsWith(kw)); const i = r && r.querySelector('input'); return i ? i.value : null; };

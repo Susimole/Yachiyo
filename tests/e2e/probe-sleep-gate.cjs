@@ -33,7 +33,7 @@ const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '..', '..');   // ⚠️ 2026-10-21 修：原来少一层，指到了 tests/ —— 搬进仓库那天起就起不来
 const HOME = path.join(os.tmpdir(), 'yachiyo-sleepgate-probe');
 const PORT = 9365;
 
