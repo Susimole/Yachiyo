@@ -123,6 +123,39 @@ function resetAll() {
     typeof mockReply === 'string' && mockReply.length > 0,
     '（主进程那段接线由 probe-speak 真机验）');
 
+  /*
+   * ★★ 2026-10-20 加的**静态闸**：`recordSaid` 只能有**一个**定义。
+   *
+   *   他当晚报的：「桌宠自己说的话还是无法同步至聊天框」。
+   *   实测根因：`main/index.cjs` 里有两份同名函数 ——
+   *     顶部 `function recordSaid()`（记两本账：说过什么 + 推对话流）✓
+   *     但 `whenReady` 里又有一份 `const recordSaid = …`（**只记第一本**），
+   *     把外面那个遮住了 ⇒ 自言语 / 睡前 / 识屏三个调用点全用了残缺版
+   *     ⇒ 聊天记录里只有"对话"，她主动说的话一个字都不落。
+   *   静态验法最省事，而且这类"复制一份改了名字忘了改"的病只靠读代码才看得见。
+   */
+  {
+    const idx = fs.readFileSync(path.join(ROOT, 'src/main/index.cjs'), 'utf8');
+    /*
+     * ⚠️ 先把**注释**剥掉再数 —— 我自己第一版就踩了：注释里写着
+     *    「原来还有一个同名的 `const recordSaid = …`」，正则把那句话也数进去了，
+     *    于是断言报「定义了 2 次」。**数代码前先去掉注释**，不然判据会被注释带跑。
+     */
+    const code = idx.split('\n')
+      .filter((l) => {
+        const t = l.trim();
+        return !t.startsWith('*') && !t.startsWith('/*') && !t.startsWith('//');
+      }).join('\n');
+    const defs = (code.match(/recordSaid\s*=(?!=)/g) || []).length
+      + (code.match(/function\s+recordSaid\s*\(/g) || []).length;
+    chk('★ `recordSaid` 全文件只有一个定义（防止同名遮蔽再犯）', defs === 1, '定义了 ' + defs + ' 次');
+    const body = code.slice(code.indexOf('function recordSaid'));
+    chk('★ 那个定义里**推对话流**（memory.push assistant）',
+      /memory\.push\('assistant'/.test(body.slice(0, 1600)), '没找到 memory.push');
+    chk('★ 推送时带 kind（以后要分样式/过滤才有依据）',
+      /memory\.push\('assistant'[^)]*\{\s*kind/.test(body.slice(0, 1600)), '没带 kind');
+  }
+
   // ② 自言语：onSaid 回调
   resetAll();
   const heard = [];
@@ -255,6 +288,33 @@ function resetAll() {
     || fs.statSync(path.join(REAL, 'data', 'profile.md')).mtimeMs < STARTED, '');
 
   provider.chat = realChat;
+
+  /*
+   * ══════════ C-3 · 「她主动说的话」进记录、但不喂给模型（2026-10-20） ══════════
+   *
+   *   他拍的口径：「要留在聊天窗里给我看，但**别喂进提示词**」——
+   *   识屏 20 分钟一条、自言语半小时一条，一天几十条会把真对话挤出 60 条窗口。
+   */
+  console.log('\n【C-3 · 主动说的话：进对话流，但不进提示词】');
+  resetAll();
+  memory.push('user', '在吗');
+  memory.push('assistant', '在的', {});
+  memory.push('assistant', '改文件呢，别光盯着进度条发呆。', { kind: '识屏' });
+  memory.push('assistant', '忽然想吃松饼了。', { kind: '自言自语' });
+  memory.push('user', '你在干嘛');
+  memory.push('assistant', '陪你啊', { kind: '对话' });
+
+  const all = memory.recent(20);
+  const forModel = memory.recent(20, { skipProactive: true });
+  chk('★ 聊天窗那一路（不带参数）看得到识屏那句话',
+    all.some((m) => /进度条/.test(m.content)), '');
+  chk('★ 喂模型那一路（skipProactive）滤掉识屏/自言语',
+    !forModel.some((m) => /进度条|松饼/.test(m.content)), JSON.stringify(forModel.map((m) => m.content)));
+  chk('★ 真正的对话一条都不能少',
+    forModel.some((m) => m.content === '在吗') && forModel.some((m) => m.content === '陪你啊'),
+    JSON.stringify(forModel.map((m) => m.content)));
+  chk('★ 开头仍然是 user（模型别从 assistant 开始看）',
+    forModel.length > 0 && forModel[0].role === 'user', forModel.length ? forModel[0].role : '(空)');
 
   console.log('\n' + '─'.repeat(52));
   const pass = out.filter((x) => x.ok).length;

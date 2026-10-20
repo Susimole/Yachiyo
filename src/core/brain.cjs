@@ -17,6 +17,7 @@ const provider = require('./provider.cjs');
 const habits   = require('./habits.cjs');
 const prompt   = require('./prompt.cjs');
 const markers  = require('./markers.cjs');
+const log      = require('./log.cjs');
 /*
  * ★ 「看屏幕」这个工具（2026-10-17 加的，方案乙 —— 他选工具调用而不是"标记 + 二次请求"）。
  * ⚠️ 它内部自己做三级降级：对话模型 → 识图模型 → 固定文案「什么都没看见...」。
@@ -80,7 +81,12 @@ async function reply(text, o = {}) {
      */
     ...(c.memShort === false
       ? [{ role: 'user', content: text }]
-      : memory.recent(c.memShortCount || 30)),
+      /*
+       * ★★ 2026-10-20：**喂模型的历史要滤掉她主动说的话**（他拍板的）。
+       *   识屏 / 自言自语 / 睡前 那些已经进了对话流（聊天窗能看到），
+       *   但不能占模型的上下文窗口 —— 一天几十条会把真正的对话挤没。
+       */
+      : memory.recent(c.memShortCount || 30, { skipProactive: true })),
   ];
 
   let out;
@@ -125,6 +131,19 @@ async function reply(text, o = {}) {
    *      所以下面剥标记/入库那段要拿**第二次**的 `out`。
    */
   let lookDesc = '';
+  /*
+   * ★★ 2026-10-20：**每轮记一行事实**（模型 / 提示词长度 / 有没有工具 / 正文 / 工具调用）。
+   *
+   *   为什么非要有：他报「切换模型后新模型未注入系统提示词」和「识图仍旧失败」，
+   *   而这两件事在日志里**一点痕迹都没有** —— 我只能靠猜（猜了两轮都没猜中）。
+   *   有了这一行，下次他说"没注入"，我们直接看是不是 提示词 0 字；
+   *   说"识图失败"，直接看 工具调用 是不是 0。
+   *
+   *   ⚠️ 只记长度不记内容（提示词里有他的人格和聊天内容，日志会被他贴出去）。
+   */
+  log.info('对话', `模型 ${c.model || '?'} · 提示词 ${sysPrompt.length} 字`
+    + ` · 工具 ${(o.chain || 'chat') === 'chat' ? '有' : '无'}`
+    + ` · 正文 ${(out.text || '').length} 字 · 工具调用 ${(out.toolCalls || []).length}`);
   /*
    * ★ 2026-10-18：**她是怎么看见的**也要记下来。
    *   原来只留 `lookDesc`（一段文字），可 `describe()` 明明还返回了

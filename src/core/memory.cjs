@@ -89,15 +89,34 @@ function push(role, content, extra = {}) {
  *    「你刚才说啥」和「我回啥」截成不对称的一对。
  *    所以从最新往回捡，捡到任一闸满为止，**并且保证开头一定是 user**
  *    （assistant 开头有些模型会犯迷糊）。
+ *
+ * ★★ 2026-10-20 加了第二个参数 `opt`：
+ *    `{ skipProactive: true }` = **跳过她主动说的那些**（识屏 / 自言自语 / 睡前…）。
+ *
+ *    他 2026-10-20 拍板的口径：「那些话**要留在聊天窗里给我看**，但**别喂进提示词**」。
+ *    理由：识屏 20 分钟一条、自言语半小时一条，一天几十条 ——
+ *    它们会把真正的对话挤出 60 条那个窗口，她聊着聊着就把刚才的对话忘了。
+ *    ⇒ 记录照旧进对话流（`chat:history` 走的是不带这个参数的 `recent()`，能看到），
+ *      只有**喂模型**那一路过滤。
+ *
+ *    ⚠️ 过滤是在**捡的循环里**做的，不是事后 filter —— 否则字符预算先被那些话吃掉，
+ *       真正该给模型的对话反而被挤没了。
  */
-function recent(maxTurns = MAX_TURNS) {
+function recent(maxTurns = MAX_TURNS, opt = {}) {
   load();
   const picked = [];
   let chars = 0;
+  const skipProactive = opt && opt.skipProactive === true;
+  /*
+   * 「她主动说的话」在对话流里带 `kind`；没有 kind 的（或 '对话'/'快速问答'）
+   * 才是真正的一问一答。
+   */
+  const isProactive = (m) => !!m.kind && m.kind !== '对话' && m.kind !== '快速问答';
 
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     if (picked.length >= maxTurns) break;
+    if (skipProactive && isProactive(m)) continue;
 
     /*
      * ⚠️⚠️ **最新那条不管多长都得留下**（2026-10-16 修的）。
