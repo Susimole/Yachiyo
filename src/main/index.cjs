@@ -47,6 +47,8 @@ const mouse = require('./mouse.cjs');
 const websearch = require('../core/websearch.cjs');
 const capture = require('../core/capture.cjs');
 const peeker  = require('../core/peeker.cjs');
+/* ★ 2026-10-20：只为了 `vision:state`（"这台机器看不了图"那条记录） */
+const looktool = require('../core/looktool.cjs');
 /*
  * ★ 游戏检测（2026-10-17 加的）：全屏 + 进程两条一起看，见 core/gamedetect.cjs 顶上那段。
  * ⚠️ 它只负责"判断"，不碰她的状态 —— 判断结果通过 `game:changed` 广播给页面，
@@ -382,7 +384,7 @@ function applyMainSideEffect(k, v) {
  *    渲染外部内容）Key 就漏了；二是他截图发群里时，设置面板里的 Key 明晃晃的。
  * 页面只需要知道「配没配」—— 非空就是配了。写的时候照样能写（他手输的那次）。
  */
-const SECRET_KEYS = ['apiKey', 'screenKey'];
+const SECRET_KEYS = ['apiKey'];   // ★ 2026-10-20：`screenKey` 随三格一起删了
 function maskForPage(c) {
   const out = { ...c };
   for (const k of SECRET_KEYS) {
@@ -1294,6 +1296,17 @@ ipcMain.handle('weather:get', async (_e, force) => {
 /* 设置面板的「测试连接」+「检测模型」2026-10-18 拆到 ./ai.cjs 了 */
 ai.register(ipcMain, cfg);
 
+/*
+ * ★ 2026-10-20：「这台机器上的对话模型看不了图」要给设置面板看。
+ *   为什么需要：只有**真发一次**才知道模型有没有视觉（没有 supports_vision 字段），
+ *   而失败那一瞬间他多半没在看日志 —— 关掉客户端就更没了。
+ *   ⇒ `looktool` 在服务端明确拒绝图片时落一个 `state/vision.json`，这里只读。
+ */
+ipcMain.handle('vision:state', async () => {
+  try { return { ok: true, state: looktool.noVisionState() }; }
+  catch (err) { return { ok: false, error: err.message, state: null }; }
+});
+
 /* ============================================================
    字体
    ============================================================
@@ -1522,23 +1535,22 @@ if (!app.requestSingleInstanceLock()) {
     };
 
     /*
-     * ★★ 「她说过的每一句话，都记一笔」—— 统一走这一个入口。
+     * ★★ 「她说过的每一句话，都记一笔」—— 统一走**文件顶部那个** `recordSaid`
+     *    （见第 608 行）。它记两本账：`memory.addSpoken`（防复读）+ 推对话流
+     *    （聊天窗拉历史用的就是对话流）。
      *
-     *   ⚠️⚠️ 为什么非要有这一步：`memory.buildSpokenBlock()` 那块
-     *     「你最近自己说过的话」一直在提示词里，但**从来没人往里面写** ——
-     *     `memory.addSpoken` 写好了、导出了、一次都没被调用过。
-     *     结果：那块永远是空的 → 她**没有任何依据知道自己刚才说过什么**
-     *     → 同一句话反复说（旧工程实测过「你 X 分钟没挪窝了」一小时说 8 遍）。
+     * ⚠️⚠️⚠️ **这里原来还有一个同名的 `const recordSaid = …`，把外面那个遮住了。**
+     *    那个版本**只记"我说过什么"，不推对话流**，于是在这里的三个调用点
+     *    （自言语 / 睡前 / 识屏）全都用了它 ——
+     *    结果：识屏和自言语说的话，聊天记录里**一个字都没有**，
+     *    只有"对话"那条链（在别的函数作用域里，用的是顶部那个）正常。
      *
-     *   ⚠️ 这是**唯一**的写入点。旧工程这里是 `Add-AiSaid` ——
-     *     她说每句话的唯一出口，副产物就是记下她说了什么。
-     *     新工程没有那个函数，所以在这儿补一个等价物；**以后新增任何
-     *     "她开口"的链，都要从这儿走**，不然那条链的复读就又没人管了。
+     *    他 2026-10-20 报的正是这个：「桌宠自己说的话还是无法同步至聊天框」。
+     *    实测：13:11:06 识屏说了 23 字、自言语说了 32 字，而 `data/chat.jsonl`
+     *    里那两条**根本不存在**（最近的一条是 13:11:23 的对话）。
+     *
+     *    ⇒ 删掉本地那份，全部用顶部那一个。**别再在函数里复制一份。**
      */
-    const recordSaid = (text, kind) => {
-      try { memory.addSpoken(kind || '主动', text); }
-      catch (err) { plog('[说] 记「我说过什么」失败：' + err.message); }
-    };
 
     /**
      * 现在这句是不是「晚安」—— 由 autoexit 自己说了算（见上面 sayIt 里那段注释）。
