@@ -663,3 +663,18 @@ html,body{
   padding:10px 12px 2px; background:var(--bg-soft);
 }
 .uchart svg{ display:block; }
+
+/* 用量走势图的"看更早"滑块（2026-10-21 加：日/月窗口化后用） */
+.uchart-range{
+  width:100%; height:14px; margin:0; padding:0;
+  -webkit-appearance:none; appearance:none; background:transparent; cursor:grab;
+}
+.uchart-range:active{ cursor:grabbing; }
+.uchart-range::-webkit-slider-runnable-track{
+  height:4px; border-radius:2px; background:var(--line);
+}
+.uchart-range::-webkit-slider-thumb{
+  -webkit-appearance:none; appearance:none; width:14px; height:14px; margin-top:-5px;
+  border-radius:50%; background:var(--accent); border:2px solid var(--bg);
+  box-shadow:0 1px 4px rgba(0,0,0,.25);
+}

@@ -206,6 +206,20 @@ let usageChartPaint = null;
 async function mountUsageChart(cell) {
   let range = 'day';
   let data = null;
+  /*
+   * ★ 2026-10-21：**窗口状态**（日和月用）。`null` = 贴最右端，也就是"看最近的"。
+   * ⚠️ 它只在闭包里，**不进配置** —— 写配置会触发面板重画，滑块会被换掉。
+   */
+  let winPos = null;
+  /** 一次显示几格：日 6 小时 · 月 7 天 · 周全显示（本来就 7 根） */
+  const winSpan = () => (range === 'day' ? 6 : range === 'month' ? 7 : Number.MAX_SAFE_INTEGER);
+  /** 窗口起点（自动夹在合法范围里；null → 最右） */
+  const winIndex = (total, span) => {
+    if (span >= total) return 0;
+    const maxStart = total - span;
+    if (winPos === null || !Number.isFinite(winPos)) return maxStart;
+    return Math.min(maxStart, Math.max(0, Math.round(winPos)));
+  };
   const money = (n) => { const { sym, div } = curInfo(api.cfg()); return sym + (Number(n || 0) / div).toFixed(2); };
 
   /**
@@ -214,18 +228,22 @@ async function mountUsageChart(cell) {
    *    就这么几根柱子，SVG 手写比配一个库便宜。
    */
   const chart = () => {
-    const P = data.points;
     /*
-     * ★★ 2026-10-21（他要的）：**每根柱子都显示 token 和金额**，不再只标最后一根。
-     *   层级照他的草图：**数字最大 → `token` 小字居中 → 金额比单位略大**。
-     *   ⚠️ 他定的口径：日 / 周 的 token 一律用 **k**；月视图按量级用 **k 或 m**。
-     *   ⚠️ 24 格时每格只有 26px，字号只能给到 6.5/4/5.5（再小就糊）——
-     *      所以图上不追求看清，**明细靠悬停**（每根柱子挂了 `<title>`）。
-     *   ⚠️ 高度 128 → **176**：三行标签要有地方，否则最矮那几根的标签会压到横轴上。
+     * ★★ 2026-10-21：**日和月加"窗口 + 滑块"，字号统一放大 25%**（他要的）。
+     *   他原话：「字体好小看不清……日和月做个可拖动小滑块，显示范围只显示最近
+     *   6 小时 / 7 天，并且将日/周/月的数据显示放大 25%」。
+     *   ⇒ 日视图一次露 6 格、月视图 7 格（每格撑到 ~90px，字才看得清），
+     *     剩下一段靠滑块平移；周视图本来 7 根就放得下，不加滑块。
+     *   ⚠️ 窗口位置存在**闭包**里（`winPos`），不进配置 —— 存配置会触发面板重画，
+     *      重画就把手里正拖着的滑块换掉了（跟调色板那次同一个坑）。
      */
+    const span = winSpan();
+    const i0 = winIndex(data.points.length, span);
+    const P = data.points.slice(i0, i0 + span);
     const W = 640; const H = 176; const PAD = 16;
     const n = P.length;
-    const BW = n > 20 ? 14 : n > 10 ? 20 : 54;
+    /* 窗口化之后最多 7 根 ⇒ 宽度可以给足；仍留一档给周视图 */
+    const BW = n >= 7 ? 62 : n >= 4 ? 78 : 96;
     const gap = (W - PAD * 2 - BW * n) / Math.max(1, n - 1);
     const max = Math.max(data.peak, 1e-9);
 
@@ -237,24 +255,28 @@ async function mountUsageChart(cell) {
       const k = x / 1000;
       return (k >= 10 ? Math.round(k) : Math.round(k * 10) / 10) + 'k';
     };
-    /* 字号按格子密度分三档：周(7 根) / 日(24 根) / 月(30 根) */
-    const S = n <= 10 ? { num: 10, unit: 6, money: 7.5 }
-      : n <= 26 ? { num: 6.5, unit: 4, money: 5.5 }
-        : { num: 5.5, unit: 3.8, money: 5 };
+    /*
+     * 字号：窗口化后每格 ~90px，三档统一**放大 25%**（他要求 ×1.25）。
+     * 周 10→12.5 / 日 6.5→8.1 / 月 5.5→6.9（单位、金额同比例）。
+     */
+    const K = 1.25;
+    const base = n <= 8 ? { num: 10, unit: 6, money: 7.5 } : { num: 6.5, unit: 4, money: 5.5 };
+    const S = { num: base.num * K, unit: base.unit * K, money: base.money * K };
 
     let bars = '';
     P.forEach((p, i) => {
       const h = Math.max(2, Math.round((p.cost / max) * (H - 22 - 64)));
       const x = PAD + i * (BW + gap);
       const y = H - 22 - h;
-      const isNow = i === n - 1;                       // 最后一格 = 现在（今天 / 这一小时）
+      const gIdx = i0 + i;                             // 在整段里的真实下标
+      const isNow = gIdx === data.points.length - 1;    // 最后一格 = 现在
       /* `<title>` 必须写在 rect **里面** —— SVG 里它是子元素，放外面挂不上 */
       bars += `<rect x="${x.toFixed(1)}" y="${y}" width="${BW}" height="${h}" rx="${Math.min(4, BW / 3)}"`
         + ` fill="var(--accent)" opacity="${isNow ? 1 : 0.42}">`
         + `<title>${te(p.label)} · ${te(tok(p.tokens))} token · ${te(money(p.cost))}</title></rect>`;
 
       const cx = (x + BW / 2).toFixed(1);
-      const ny = Math.round(Math.max(11, y - 22));     // 三行标签贴着柱顶，但不许顶出画面
+      const ny = Math.round(Math.max(12, y - 24));      // 三行标签贴着柱顶，但不许顶出画面
       bars += `<text x="${cx}" y="${ny}" font-size="${S.num}" text-anchor="middle"`
         + ` fill="var(--accent)" font-weight="600">${te(tok(p.tokens))}</text>`
         + `<text x="${cx}" y="${ny + S.num + 1}" font-size="${S.unit}" text-anchor="middle"`
@@ -262,11 +284,9 @@ async function mountUsageChart(cell) {
         + `<text x="${cx}" y="${ny + S.num + S.unit + 4}" font-size="${S.money}" text-anchor="middle"`
         + ` fill="var(--accent)">${p.cost > 0 ? te(money(p.cost)) : '—'}</text>`;
 
-      // 横轴只标首 / 中 / 尾 —— 24 格全标会挤成一坨
-      if (i === 0 || i === n - 1 || (n > 10 && i === Math.floor(n / 2))) {
-        bars += `<text x="${cx}" y="${H - 6}" font-size="10"` +
-          ` text-anchor="middle" fill="var(--sub)">${te(p.label)}</text>`;
-      }
+      /* 窗口里最多 7 根 ⇒ **每根都标时间**（以前是首/中/尾） */
+      bars += `<text x="${cx}" y="${H - 6}" font-size="10.5"`
+        + ` text-anchor="middle" fill="var(--sub)">${te(p.label)}</text>`;
     });
     return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">` +
       `<line x1="${PAD}" y1="${H - 22}" x2="${W - PAD}" y2="${H - 22}" stroke="var(--line)" stroke-width="1"></line>` +
@@ -280,22 +300,33 @@ async function mountUsageChart(cell) {
     const tip = { day: '近 24 小时 · 按小时', week: '近 7 天 · 按天', month: '近 30 天 · 按天' }[range];
     const unit = range === 'day' ? '时' : '天';
     /*
-     * ⚠️⚠️ 自己带一层 `flex-direction:column` —— 别指望外面的容器。
-     *    挂载进来的这一格，布局取决于那一行**有没有 label**
-     *    （有 label 才是 `.body.stack`＝竖排；没 label 就落进 `.row .body` ＝**横排**）。
-     *    第一版没带，结果「三种粒度」和「图表」被摆成了左右两列、峰值跑到图右边
-     *    —— 实测截图一眼就看出来了。
-     * ⚠️ 提示行也并成一条放**底下**：放在按钮旁边会被挤得换行，看着乱。
+     * ★★ 2026-10-21：**日和月加"窗口 + 滑块"**（他要的）。
+     *   日视图一次只露 6 格、月视图 7 格 —— 每格撑到 ~90px，字才看得清；
+     *   剩下的部分靠滑块平移。周视图本来 7 根就放得下，不加滑块。
+     *   ⚠️ 窗口位置存在闭包里（`winPos`），**不进配置** —— 存配置会触发面板重画，
+     *      重画就把滑块复位了（跟调色板那次同一个坑）。
      */
+    const total = data.points.length;
+    const span = winSpan();
+    const i0 = winIndex(total, span);
+    const slider = span >= total ? '' :
+      `<input type="range" class="uchart-range" min="0" max="${total - span}" step="1" value="${i0}"`
+      + ` title="拖这里看更早的">`;
     cell.innerHTML =
       `<div style="display:flex; flex-direction:column; gap:8px; width:100%">
          <div class="mrow-top"><div class="cwrap">${seg}</div></div>
          <div class="uchart">${chart()}</div>
+         ${slider}
          <div class="kv">${tip} · 合计 ${te(money(data.sum.cost))} · 峰值 ${te(money(data.peak))} · 平均 ${te(money(data.sum.cost / Math.max(1, data.points.length)))}/${unit}</div>
        </div>`;
     cell.querySelectorAll('[data-range]').forEach((b) => {
-      b.onclick = async () => { range = b.dataset.range; await load(); };
+      b.onclick = async () => { range = b.dataset.range; winPos = null; await load(); };
     });
+    const sl = cell.querySelector('.uchart-range');
+    if (sl) {
+      /* 只重画图那一块 —— 整页重画会把手里正拖着的滑块换掉 */
+      sl.oninput = () => { winPos = Number(sl.value); cell.querySelector('.uchart').innerHTML = chart(); };
+    }
   };
 
   const load = async () => {
