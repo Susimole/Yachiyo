@@ -47,7 +47,20 @@ const autoexit = fresh('autoexit.cjs');
 chk('还没说过要延时 → 截止时刻是 0',
   autoexit.lateDeadline(new Date()) === 0, String(autoexit.lateDeadline(new Date())));
 
+/*
+ * ⚠️⚠️ **时刻必须钉死，不能用「现在」**（2026-10-20 深夜踩到的，实测红）。
+ *
+ *   下面要验「同一天只让延一次」，做法是 t0 → t1 = t0 + 2 小时。
+ *   原来 `t0 = new Date()`，于是 **22:00 之后跑，t1 就跨到第二天**，
+ *   「同一天」这个前提自己就不成立了 ⇒ 断言必红。
+ *   实测 23:59 跑：T.day(t0)=2026-10-20、T.day(t1)=2026-10-21，
+ *   askLate 正常放行（这本来就是对的），测试却要求它拒绝。
+ *
+ *   ⇒ 钉在今天 **10:00**：±2 小时都还在同一天，白天夜里跑结果一样。
+ *   （FACT 里已有同类教训：「凡是今天/昨天/几小时前的用例，都要问一句换个时刻跑还成立吗」。）
+ */
 const t0 = new Date();
+t0.setHours(10, 0, 0, 0);
 const r1 = autoexit.askLate(t0);
 chk('askLate 成功', r1.ok === true, r1.why);
 chk('  今天那次算"用掉了"', autoexit.lateUsedToday(t0) === true, '');
