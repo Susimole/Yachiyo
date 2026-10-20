@@ -161,6 +161,11 @@ contextBridge.exposeInMainWorld('yachiyo', {
     models: (o) => ipcRenderer.invoke('ai:models', o),
   },
 
+  /* 2026-10-20：「这个模型看不了图」的那条记录（设置面板显示红字用） */
+  vision: {
+    state: () => ipcRenderer.invoke('vision:state'),
+  },
+
   /* ---------- 骨架参数（每个姿态各自那套） ---------- */
   rig: {
     /** 读五个姿态当前的倾斜角 `{ idle, walk, run, sit, sleep }` */

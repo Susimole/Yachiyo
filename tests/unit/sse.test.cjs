@@ -192,6 +192,27 @@ async function feed(chunks, opts = {}) {
   chk('只回了 [DONE]、真的没内容 → 保留原来的说法',
     !r13.ok && /一个字都没回/.test(r13.error), r13.ok ? r13.text : r13.error);
 
+  /* ══════════ ⑥ 只有工具调用、没有正文（2026-10-20 修的） ══════════ */
+  console.log('\n【只有 tool_calls、正文为空 —— 这不算失败】');
+
+  const r14 = await feed([
+    evt({ choices: [{ delta: { tool_calls: [{
+      index: 0, id: 'call_1', type: 'function',
+      function: { name: 'look_screen', arguments: '{}' },
+    }] } }] }, LF),
+    evt({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }, LF),
+    rawEvt('[DONE]', LF),
+  ]);
+  chk('★ 只有工具调用、正文为空 ⇒ **不抛错**（修复前：「她一个字都没回」，识屏永远走不到）',
+    r14.ok, r14.ok ? '没有抛错' : r14.error);
+  chk('★ 工具调用解析出来（name=look_screen）',
+    r14.ok && r14.toolCalls && r14.toolCalls[0] && r14.toolCalls[0].name === 'look_screen',
+    r14.ok ? JSON.stringify(r14.toolCalls) : r14.error);
+  chk('finish_reason=tool_calls → toolFinish 为真',
+    r14.ok && r14.toolFinish === true, r14.ok ? String(r14.toolFinish) : r14.error);
+  chk('正文是空串（不是 undefined）', r14.ok && r14.text === '',
+    r14.ok ? JSON.stringify(r14.text) : r14.error);
+
   /* ══════════ 隔离 ══════════ */
   console.log('\n【隔离检查】');
   chk('跑在隔离目录里', HOME.includes('_selfcheck-home-sse'), HOME);

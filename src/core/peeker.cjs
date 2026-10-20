@@ -57,6 +57,11 @@ function promptMod() {
 }
 const usage = require('./usage.cjs');
 const markers = require('./markers.cjs');
+/*
+ * ★ 2026-10-20：把「这台机器看不了图」落一份状态给设置面板显示。
+ *   ⚠️ looktool 不 require 我们，不构成循环（上面 prompt 那套的坑不适用于它）。
+ */
+const looktol = require('./looktool.cjs');
 const log = require('./log.cjs');
 
 const FILE = store.STATE + '/screen.json';
@@ -250,7 +255,13 @@ async function look(now = new Date()) {
   let r;
   try {
     r = await provider.chat({
-      base: c.apiBase, key: c.apiKey, model: c.screenModel || c.model,
+      /*
+       * ★ 2026-10-20：**识图不再有自己的模型/地址/密钥**（三格已删）。
+       *   原来这行是 `c.screenModel || c.model`，可连接还是主对话那套 ——
+       *   于是填了 `kimi-k2.6` 就变成「拿 kimi 的型号去问 deepseek」，
+       *   2026-10-18 那条 400 就是它。现在只剩一个模型，没有第二个可以填错。
+       */
+      base: c.apiBase, key: c.apiKey, model: c.model,
       messages: [
         { role: 'system', content: buildSystem(fg, key, now) },
         {
@@ -268,6 +279,17 @@ async function look(now = new Date()) {
       thinkingStyle: c.thinkingStyle,
     });
   } catch (err) {
+    /*
+     * ★ 2026-10-20：**「这个模型看不了图」要说清楚**。
+     *   原来一律记成「问她的时候出错：…」—— 那句话在日志里跟网络抖动、
+     *   被限流长得一模一样，而他关掉客户端之后**只剩这条日志可看**。
+     *   （2026-10-18 那条 400 就是这么被埋了整晚的。）
+     */
+    if (err && err.noVision) {
+      looktol.noteNoVision(err.message);
+      log.error('识屏', '当前对话模型不具备视觉模块 → 这轮跳过（' + err.message + '）');
+      return { ok: false, why: 'noVision', look: null };
+    }
     log.error('识屏', '问她的时候出错：' + err.message);
     return { ok: false, why: err.message, look: null };
   }

@@ -49,12 +49,30 @@ function explain(status, body) {
   const tail = detail ? `（${detail}）` : '';
   const hard = /invalid_api_key|insufficient|authentication|invalid_request/i.test(detail);
 
+  /*
+   * ★★ 2026-10-20：认出「这个模型看不了图」（`noVision`）。
+   *
+   *   背景：他 2026-10-20 拍板删掉「识图地址 / 密钥 / 模型」三格，
+   *   识图从此**只用对话模型**。代价是：换成没有视觉的模型，她就真瞎了，
+   *   而且**没有任何字段能提前问出来**（没有 `supports_vision` 这种东西）。
+   *   唯一能知道的办法就是**真发一次被拒** —— 所以这里给它单独标一个标记，
+   *   由 `looktool` 换成那句「当前对话模型不具备视觉模块」。
+   *
+   *   ⚠️ **只认 4xx**。5xx / 网络错不是"没视觉"，混进去就等于给了个假结论
+   *      （偶发故障被说成"你这模型看不了图"）。
+   *   ⚠️ 这条**认不出"收了图但瞎说"** —— 实测 `deepseek-v4-pro` 不报错，
+   *      问它屏幕上什么颜色，它答「未知」。那种只能靠 look.log 里
+   *      `via=chat` 但描述空/离谱看出来。
+   */
+  const noVision = status >= 400 && status < 500
+    && /image|vision|multimodal|content[\s_-]*type|modality/i.test(detail);
+
   switch (status) {
-    case 400: return { msg: `请求格式不对${tail}`, hard: true };
+    case 400: return { msg: `请求格式不对${tail}`, hard: true, noVision };
     case 401: return { msg: `API Key 不对或者过期了${tail}`, hard: true };
     case 402: return { msg: `账户余额不够了${tail}`, hard: true };
     case 403: return { msg: `这个 Key 没有调这个模型的权限${tail}`, hard: true };
-    case 422: return { msg: `参数有问题${tail}`, hard: true };
+    case 422: return { msg: `参数有问题${tail}`, hard: true, noVision };
     case 429: return { msg: `问得太密了，被限流，缓一下再试${tail}`, hard };
     case 500: case 502: case 503: case 504:
       return { msg: `对面服务器抽风了，等会儿再试${tail}`, hard: false };
@@ -75,7 +93,7 @@ function explain(status, body) {
        *   5xx 仍然软错（对面抽风，重试有意义）；429 上面单独一档。
        */
       const is4xx = status >= 400 && status < 500;
-      return { msg: `请求失败（HTTP ${status}）${tail}`, hard: is4xx || hard };
+      return { msg: `请求失败（HTTP ${status}）${tail}`, hard: is4xx || hard, noVision };
     }
   }
 }
@@ -230,7 +248,7 @@ async function once(o) {
     ]);
     clearTimeout(total); clearTimeout(idle);
     const e = explain(res.status, bodyText);
-    throw Object.assign(new Error(e.msg), { hard: e.hard, status: res.status });
+    throw Object.assign(new Error(e.msg), { hard: e.hard, status: res.status, noVision: e.noVision });
   }
 
   // ---- 读 SSE ----
@@ -436,7 +454,21 @@ async function once(o) {
    *   模型名一个字都没错，错的是**分隔符**。他照着这句话去查模型名，
    *   查一辈子也查不出来。**误导性的报错比没有报错还费时间。**
    */
-  if (!text) {
+  /*
+   * ★★ 2026-10-20：**只有 tool_calls、没有正文，是正常的**，不是失败。
+   *
+   *   他 2026-10-20 报「用 deepseek-flash 在对话里引导识图仍旧失败」。
+   *   实测：说「看看我屏幕」，模型正确地调了 `look_screen`，`finish_reason`
+   *   就是 `tool_calls`，**正文一个字都没有** —— 而这里把"没正文"一律当硬错抛掉：
+   *     她一个字都没回 —— 可能是模型名写错了
+   *   ⇒ `brain.cjs` 的 catch 把刚 push 的那句话撤回、整轮报错，
+   *      工具循环**一步都没走到**，`look.log` 里自然一次都不会出现。
+   *      （这解释了为什么 2026-10-17 加的工具到现在从没真跑过。）
+   *
+   *   ⚠️ 所以判据要改成「没正文**而且**没工具调用」才算没回话。
+   */
+  const hasToolCall = toolCalls.filter(Boolean).length > 0;
+  if (!text && !hasToolCall) {
     if (rawBytes > 0 && dataLines === 0) {
       throw Object.assign(
         new Error(`对面回了 ${rawBytes} 字节，一条 SSE 事件都没认出来 —— 接口可能不是 SSE，或者分隔符不是空行`),

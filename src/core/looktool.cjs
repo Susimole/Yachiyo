@@ -1,23 +1,24 @@
 /**
- * 「看屏幕」这个工具的实现（方案「乙」，2026-10-17 他定的）。
+ * 「看屏幕」这个工具的实现（方案「乙」，2026-10-17 他定的；**2026-10-20 砍成两档**）。
  *
- * 他要的规格（原话口径）：
- *   ① 优先用**对话模型**看（如果它有视觉模块）
- *   ② 对话模型没有视觉 / 视觉不可用 ⇒ 用**识图模型**（`screenModel`）
- *   ③ 识图模型**留空 / 超时 / 不可用** ⇒ 输出固定文案：
- *      `什么都没看见...（当前对话模型无视觉模块/识图模型不可用）`
- *   ④ 看完的描述要**进聊天记录**
+ * ★★ 2026-10-20 他拍板的改动。原话：「市面上大多数模型都有视觉模块，所以感觉单独拉
+ *    一个视觉模型配置项有点不太方便」→ 他选「只删除识图地址/密钥/模型」。
  *
- * ⚠️⚠️ 「对话模型有没有视觉」**没有标准判断方法** —— 没有 `supports_vision` 这种字段。
- *    唯一可靠的做法是**带图发一次，报错就降级**。所以第一次看屏幕可能会白花一次
- *    被拒的请求（通常不花钱），之后就正常了。
- *    ⚠️ 这里**故意不做缓存**（不记"上次哪个能用"）：配置随时会被他改
- *       （换模型、换平台），缓存反而会出现"明明填了识图模型却还用旧的"。
- *       一次白试的代价很小，行为可预测更重要。
+ *    于是：删掉 `screenBase` / `screenKey` / `screenModel` 三格，识图**永远跟对话模型走**；
+ *    降级链从三级变两级 —— **对话模型 → 那句提示**。
+ *
+ *    判断"这个模型有没有视觉"仍然**只能真发一次**（没有 `supports_vision` 这种字段），
+ *    被服务端明确拒绝时（`provider` 标的 `noVision`）用这句：
+ *    `当前对话模型不具备视觉模块`（他给的原文，一个字别改）。
+ *
+ * ⚠️ 代价写在这儿，省得以后再讨论一遍：**想用另一家的模型看图，做不到了** ——
+ *    要换平台只能整体切预设。这是有意的取舍：两套连接能各说各话，正是
+ *    2026-10-18 那条 400「拿 kimi 的型号去问 deepseek」的根源。
+ * ⚠️ 还有一件**技术上做不到**的事：认不出"收了图但瞎说"（`deepseek-v4-pro` 实测
+ *    不报错，问颜色答「未知」）。那种只能靠 `look.log` 里 `via=chat` 但描述空/离谱看。
  *
  * ⚠️ 超时是**单独**的（25 秒），不走 `provider.chat` 那个总时长 ——
  *    识屏只是"顺手看一眼"，不该跟一句正经对话耗一样久。
- *    而且他明确要求"识图模型调用超时"要进降级链。
  */
 'use strict';
 
@@ -27,11 +28,20 @@ const provider = require('./provider.cjs');
 const store = require('./store.cjs');
 const path = require('node:path');
 
-/** 单次"看图"最多等多久（他的降级链里有"超时"这一档，所以必须有个明确的数） */
+/** 单次"看图"最多等多久 */
 const TIMEOUT_MS = 25000;
 
-/** 三级都失败时的固定文案（他给的原话，别改字） */
-const BLIND = '什么都没看见...（当前对话模型无视觉模块/识图模型不可用）';
+/**
+ * 没看成（截屏失败 / 网络不通 / 模型没回话）时她说的那句。
+ * ⚠️ 2026-10-20 改过措辞：原文里带着「识图模型不可用」，可那一档已经删了。
+ */
+const BLIND = '什么都没看见...（这次没看成：截屏失败 / 网络不通 / 模型没回话）';
+
+/**
+ * ★★ 2026-10-20：**他 2026-10-20 亲口给的文案，一个字都不能改**。
+ *    触发条件 = 服务端明确拒绝图片（`provider` 的 `noVision`）。
+ */
+const NOVISION = '当前对话模型不具备视觉模块';
 
 /**
  * 让模型看图要说什么。
@@ -50,42 +60,34 @@ function withTimeout(p, ms) {
 }
 
 /**
- * ★★ 2026-10-18：识图这一档**可以整套独立**（地址 / 密钥 / 模型）。
+ * ★★ 2026-10-20：把"这台机器上的对话模型看不了图"**落一个文件**。
  *
- *   撞出来的 bug：原来只有 `screenModel` 一格模型名，请求还是发往
- *   `apiBase + apiKey`（主对话那套）。填个 Kimi 的型号去问 DeepSeek，
- *   必然失败，而且报错看着像"型号写错了"。
+ *   原来这件事只有一行日志（`log.error('识屏', …)`），而 `plog()` 那种日志
+ *   在非探针模式下压根不写 —— 他又是**关掉客户端才想起来"她怎么不说话"**的人，
+ *   所以光写日志等于没留证据。
+ *   ⇒ 落 `data/state/vision.json`，设置面板「连接」那组拿它显示一行红字。
  *
- *   ⚠️ 基址补 `/v1`：他给的 `https://api.moonshot.cn` 少一段 —— 实测
- *      `POST https://api.moonshot.cn/chat/completions` 直接 `url.not_found`。
- *      只在**没有路径**时补，写了 `/v1` 或别的一律不动（有的中转站路径是
- *      `/openai/deployments/...` 那种，乱补就废了）。
- *   ⚠️ **只规范化识图那一格**，主对话的 `apiBase` 原样透传 ——
- *      那是他一直在用的值，不在这轮里动它。
+ *   ⚠️ 只在**服务端明确拒绝**时写（`provider` 的 `noVision`）；网络错、超时不算。
+ *   ⚠️ 不节流到"只写一次"：每次照写，节流在**显示那一侧**做（1 小时内只提示一次）。
  */
-function normBase(raw) {
-  let b = String(raw || '').trim();
-  if (!b) return '';
-  b = b.replace(/\/+$/, '');
+const VSTATE = path.join(store.DATA, 'state', 'vision.json');
+
+function noteNoVision(why) {
   try {
-    const u = new URL(b);
-    if (u.pathname === '/' || u.pathname === '') {
-      u.pathname = '/v1';
-      b = u.toString().replace(/\/+$/, '');
-    }
-  } catch { /* 不是标准 URL 就原样用 */ }
-  return b;
+    store.writeJson(VSTATE, {
+      at: Date.now(),
+      model: String(cfg.get('model') || ''),
+      why: String(why || '').slice(0, 300),
+    });
+  } catch { /* 记不下来不该影响她看屏幕 */ }
 }
 
-/** 识图这一档用哪套连接（留空就回落到主对话那套） */
-function screenConn(c) {
-  const rawBase = String(c.screenBase || '').trim();
-  return {
-    base: rawBase ? normBase(rawBase) : String(c.apiBase || ''),
-    key: String(c.screenKey || '').trim() || String(c.apiKey || ''),
-    model: String(c.screenModel || '').trim(),
-    own: !!rawBase,          // 是不是他单独配的（只影响日志措辞）
-  };
+/** 读那条"没视觉"的记录（没有就返回 null）；给 IPC 和设置面板用 */
+function noVisionState() {
+  try {
+    const o = store.readJson(VSTATE, null);
+    return o && typeof o === 'object' && o.at ? o : null;
+  } catch { return null; }
 }
 
 /**
@@ -158,12 +160,21 @@ async function askOnce(model, shot, conn) {
  *
  * @param {{fromChat?:boolean}} [o] 从聊天里触发（只影响日志措辞）
  * @returns {Promise<{text:string, via:string, why?:string, ms:number, model?:string}>}
- *          `via` = `chat` / `vision` / `blind`（他要知道"是谁看见的"）
+ *          `via` = `chat`（看见了）/ `noVision`（模型没视觉）/ `blind`（没看成）
  */
 async function describe(o = {}) {
   const c = cfg.all();
   const t0 = Date.now();
-  const conn = screenConn(c);
+  /*
+   * ★ 2026-10-20：**只剩一套连接** —— 就是主对话那套。
+   *   删掉三格之后这里不再有"回落到谁"的问题，也就没有"型号一套、地址另一套"的地雷。
+   */
+  const conn = {
+    base: String(c.apiBase || ''),
+    key: String(c.apiKey || ''),
+    model: String(c.model || ''),
+    thinkingStyle: c.thinkingStyle,   // 各家思考开关的字段名不一样，照主对话那套走
+  };
   const shotInfo = (shot) => ({
     px: shot && shot.w ? `${shot.w}x${shot.h}` : '',
     kb: shot && shot.buffer ? Math.round(shot.buffer.length / 1024) + 'kb' : '',
@@ -183,6 +194,7 @@ async function describe(o = {}) {
   };
 
   if (!conn.key) return done({ text: BLIND, via: 'blind', why: '没填 API Key', base: conn.base });
+  if (!conn.model) return done({ text: BLIND, via: 'blind', why: '没填模型名', base: conn.base });
 
   /* ① 截屏 */
   let shot;
@@ -191,45 +203,32 @@ async function describe(o = {}) {
   if (!shot || !shot.ok) return done({ text: BLIND, via: 'blind', why: '截屏没成：' + (shot && shot.why) });
   /*
    * ⚠️ 全黑**不算错**，是"没东西可看"（锁屏 / 屏幕关了 / 独占全屏）。
-   *    但也别报"我看不见"那种话 —— 按他的固定文案走，语义一致。
+   *    但也别报"我看不见"那种话 —— 按固定文案走，语义一致。
    */
   if (shot.blank) return done({ text: BLIND, via: 'blind', why: '全黑' }, { shot });
 
-  /* ② 先让**对话模型**看（他排的第一优先；地址/密钥用主对话那套） */
-  const tried = [];
-  const mainConn = { base: String(c.apiBase || ''), key: String(c.apiKey || ''), thinkingStyle: c.thinkingStyle };
+  /* ② 就用**对话模型**看（2026-10-20 起没有第二档了） */
   try {
-    const t = await askOnce(c.model, shot, mainConn);
-    if (t) return done({ text: t, via: 'chat', model: c.model, base: mainConn.base }, { shot });
-    tried.push('对话模型没说话');
-  } catch (err) {
-    tried.push('对话模型：' + err.message);
-  }
-
-  /* ③ 降级到**识图模型**（留空就直接走最后一步） */
-  const vm = conn.model;
-  if (!vm) {
+    const t = await askOnce(conn.model, shot, conn);
+    if (t) return done({ text: t, via: 'chat', model: conn.model, base: conn.base }, { shot });
     return done({
-      text: BLIND, via: 'blind', base: conn.base,
-      why: tried.join(' / ') + ' / 识图模型留空',
+      text: BLIND, via: 'blind', model: conn.model, base: conn.base, why: '模型没说话',
+    }, { shot });
+  } catch (err) {
+    /*
+     * ★★ 服务端明确拒绝图片 ⇒ 就是「这个模型没有视觉」。
+     *    ⚠️ 这是**唯一**能被自动认出来的情况；"收了图但瞎说"认不出来（见文件头）。
+     */
+    if (err && err.noVision) {
+      noteNoVision(err.message);
+      return done({
+        text: NOVISION, via: 'noVision', model: conn.model, base: conn.base, why: err.message,
+      }, { shot });
+    }
+    return done({
+      text: BLIND, via: 'blind', model: conn.model, base: conn.base, why: err.message,
     }, { shot });
   }
-  if (vm === c.model && conn.base === mainConn.base) {
-    // 配成同一个模型（同一家）就没必要再试一次（同样的错会再来一遍，白等 25 秒）
-    return done({
-      text: BLIND, via: 'blind', base: conn.base, model: vm,
-      why: tried.join(' / ') + ' / 识图模型跟对话模型是同一个',
-    }, { shot });
-  }
-  try {
-    const t = await askOnce(vm, shot, { base: conn.base, key: conn.key, thinkingStyle: c.thinkingStyle });
-    if (t) return done({ text: t, via: 'vision', model: vm, base: conn.base }, { shot });
-    tried.push('识图模型没说话');
-  } catch (err) {
-    tried.push('识图模型：' + err.message);
-  }
-
-  return done({ text: BLIND, via: 'blind', model: vm, base: conn.base, why: tried.join(' / ') }, { shot });
 }
 
 /**
@@ -250,5 +249,6 @@ const TOOL = {
 };
 
 module.exports = {
-  TIMEOUT_MS, BLIND, ASK, TOOL, describe, askOnce, normBase, screenConn, LOG,
+  TIMEOUT_MS, BLIND, NOVISION, ASK, TOOL, describe, askOnce,
+  noteNoVision, noVisionState, VSTATE, LOG,
 };

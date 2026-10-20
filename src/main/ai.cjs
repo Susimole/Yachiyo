@@ -65,20 +65,20 @@ function register(ipcMain, cfg) {
    */
   ipcMain.handle('ai:models', async (_e, o) => {
     /*
-     * ★ 2026-10-18 加的**可选参数**（不传 = 老行为，主对话那套）：
-     *     `{ which: 'screen' }` —— 问「识图」那一套（screenBase / screenKey / screenModel）。
-     *     `{ base, key }`     —— 显式指定（留给以后，页面上别传 key：页面收到的是打码值）。
-     *
-     *   ⚠️ 为什么密钥必须由**主进程**自己从磁盘取：
-     *      页面拿到的 `apiKey` / `screenKey` 是 `••••••••`（`maskForPage`），
+     * ⚠️ 为什么密钥必须由**主进程**自己从磁盘取：
+     *      页面拿到的 `apiKey` 是 `••••••••`（`maskForPage`），
      *      它传回来的"钥匙"根本不是钥匙。
+     *
+     * ★★ 2026-10-20：删掉了 `{ which:'screen' }` 那个分支。
+     *   识图不再有自己的地址/密钥/模型（他拍板删了三格），它跟着对话模型走 ——
+     *   "单独问一下识图那家的模型清单"这件事本身就没有意义了。
+     *   `{ base, key }` 这个显式参数保留（留给以后排障用）。
      */
     const c = cfg.all();
     const arg = (o && typeof o === 'object') ? o : {};
-    const which = arg.which === 'screen';
-    const base = String(arg.base || (which ? (c.screenBase || c.apiBase) : c.apiBase) || '').trim();
-    const key = String(arg.key || (which ? (c.screenKey || c.apiKey) : c.apiKey) || '').trim();
-    const cur = String(arg.current || (which ? (c.screenModel || c.model) : c.model) || '');
+    const base = String(arg.base || c.apiBase || '').trim();
+    const key = String(arg.key || c.apiKey || '').trim();
+    const cur = String(arg.current || c.model || '');
     if (!base) return { ok: false, error: '还没填接口地址', needsBase: true };
 
     const bail = (err) => ({

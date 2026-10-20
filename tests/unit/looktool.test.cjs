@@ -39,11 +39,11 @@ console.log('selfcheck-looktool —— 看屏幕工具');
 console.log('');
 
 /* ---------- ① 固定文案 ---------- */
-console.log('── ① 固定文案（他给的原话，一个字都不能改）──');
-chk('BLIND 就是他给的那句',
-  lt.BLIND === '什么都没看见...（当前对话模型无视觉模块/识图模型不可用）',
-  lt.BLIND);
-chk('文案里带"识图模型不可用"（他要求的三档理由之一）', lt.BLIND.includes('识图模型不可用'));
+console.log('── ① 固定文案（不许改字）──');
+chk('NOVISION 就是他 2026-10-20 给的那句',
+  lt.NOVISION === '当前对话模型不具备视觉模块', lt.NOVISION);
+chk('★ BLIND 里不再提「识图模型」（那一档 2026-10-20 删了）',
+  !/识图模型/.test(lt.BLIND), lt.BLIND);
 
 /* ---------- ② 超时 ---------- */
 console.log('');
@@ -85,64 +85,68 @@ chk('★ 入库时带上 look（他要求"看完的描述要进记录"）',
 chk('★ 记录里带 via（分得清"看见"还是"说了固定文案"）',
   /lookMeta\s*=\s*\{\s*desc:[^}]*via:/.test(brainSrc), '没匹配到 via');
 
-/* ---------- ⑥ 识图独立配置（2026-10-18 加的） ---------- */
+/* ---------- ⑥ 识图不再有自己的配置（2026-10-20 删的三格） ---------- */
 console.log('');
-console.log('── ⑥ 识图能单独配地址 / 密钥 / 模型 ──');
-chk('normBase 给没写路径的地址补 /v1（他给的 moonshot 地址少了这段）',
-  lt.normBase('https://api.moonshot.cn') === 'https://api.moonshot.cn/v1',
-  lt.normBase('https://api.moonshot.cn'));
-chk('已经写了 /v1 的不重复补',
-  lt.normBase('https://api.moonshot.cn/v1') === 'https://api.moonshot.cn/v1',
-  lt.normBase('https://api.moonshot.cn/v1'));
-chk('带别的路径一律不动（中转站可能不是 /v1）',
-  lt.normBase('https://x.com/openai/v1') === 'https://x.com/openai/v1',
-  lt.normBase('https://x.com/openai/v1'));
-
+console.log('── ⑥ 识图只跟对话模型走（他 2026-10-20 拍板删三格）──');
+const ltSrcAll = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'looktool.cjs'), 'utf8');
 const cfgMod = require('../../src/core/config.cjs');
-cfgMod.set('apiBase', 'https://api.deepseek.com');
-cfgMod.set('apiKey', 'MAINKEY');
-cfgMod.set('model', 'deepseek-flash');
-cfgMod.set('screenBase', '');
-cfgMod.set('screenKey', '');
-cfgMod.set('screenModel', '');
-const c1 = cfgMod.all();
-const conn1 = lt.screenConn(c1);
-chk('三个都留空 ⇒ 回落到主对话那套（老行为不变）',
-  conn1.base === 'https://api.deepseek.com' && conn1.key === 'MAINKEY' && conn1.model === '',
-  JSON.stringify({ base: conn1.base, key: conn1.key ? '(有)' : '(空)', model: conn1.model }));
-
-cfgMod.set('screenBase', 'https://api.moonshot.cn');
-cfgMod.set('screenKey', 'SCREENKEY');
-cfgMod.set('screenModel', 'kimi-k2.6');
-const conn2 = lt.screenConn(cfgMod.all());
-chk('★ 填了就整套用识图那套（地址 / 密钥 / 模型各走各的）',
-  conn2.base === 'https://api.moonshot.cn/v1' && conn2.key === 'SCREENKEY' && conn2.model === 'kimi-k2.6',
-  JSON.stringify({ base: conn2.base, key: conn2.key, model: conn2.model }));
-chk('识图日志写在数据目录里（不往仓库扔垃圾）',
+const cfgAll = cfgMod.all();
+chk('★ config 里那三格没了（screenBase / screenKey / screenModel）',
+  !('screenBase' in cfgAll) && !('screenKey' in cfgAll) && !('screenModel' in cfgAll),
+  Object.keys(cfgAll).filter((k) => /^screen(Base|Key|Model)$/.test(k)).join(',') || '(干净)');
+chk('★ looktool 不再导出 normBase / screenConn',
+  !('normBase' in lt) && !('screenConn' in lt), Object.keys(lt).join(','));
+chk('★ 源码里没有真的读这三格（只剩注释）',
+  !/c\.screen(Model|Base|Key)/.test(ltSrcAll), '还在读');
+chk('看屏幕的日志还在数据目录（不往仓库扔垃圾）',
   lt.LOG.endsWith(path.join('data', 'look.log')) && path.isAbsolute(lt.LOG), lt.LOG);
 
+/* ---------- ⑥b "没视觉"这条路：状态文件 + 错误分类 ---------- */
+console.log('');
+console.log('── ⑥b 「当前对话模型不具备视觉模块」这条路 ──');
+chk('一开始没有"没视觉"的记录', lt.noVisionState() === null, JSON.stringify(lt.noVisionState()));
+lt.noteNoVision('The model does not support image input');
+const vst = lt.noVisionState();
+chk('★ 写下之后能读回来（设置面板那行红字靠它）',
+  !!vst && typeof vst.at === 'number' && /does not support image/.test(vst.why || ''),
+  JSON.stringify(vst));
+chk('状态文件落在 data/state 下', lt.VSTATE.endsWith(path.join('state', 'vision.json')), lt.VSTATE);
+
+const pv = require('../../src/core/provider.cjs');
+chk('★ 400 + 提到 image ⇒ 判成"没视觉"（换模型后唯一能自动发现的信号）',
+  pv.explain(400, JSON.stringify({ error: { message: 'This model does not support image input' } })).noVision === true,
+  JSON.stringify(pv.explain(400, '{"error":{"message":"does not support image input"}}')));
+chk('★ 5xx **不**判成"没视觉"（偶发故障不该被说成模型看不了图）',
+  !pv.explain(503, '{"error":{"message":"image service unavailable"}}').noVision, '5xx 误判了');
+chk('★ 跟图片无关的 400 不误判',
+  !pv.explain(400, '{"error":{"message":"bad request: max_tokens too large"}}').noVision, '误判了');
+
 /* 回归：不改 temperature（kimi-k2.6 只认 1，传 0.3 会 400） */
-const ltSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'looktool.cjs'), 'utf8');
-chk('★ 看图请求**不发 temperature**（kimi-k2.6 只认 1，传 0.3 直接 400）',
-  !/temperature\s*:/.test(ltSrc), '还留着 temperature');
+chk('★ 看图请求**不发 temperature**',
+  !/temperature\s*:/.test(ltSrcAll), '还留着 temperature');
 
 /* ---------- ⑦ 真跑一次「没填 key」这一档（不截屏、不发请求、不花钱） ---------- */
 (async () => {
   console.log('');
   console.log('── ⑦ 盲档真跑一次（隔离目录，没填 key ⇒ 截屏之前就返回）──');
   cfgMod.set('apiKey', '');
-  cfgMod.set('screenKey', '');
-  cfgMod.set('screenBase', '');
   const t0 = Date.now();
   const r = await lt.describe({ fromChat: true });
   chk('没钥匙时直接判盲，不截屏', r.via === 'blind' && /API Key/.test(r.why || ''), r.why);
   chk('返回值里带 ms（能算耗时了）', typeof r.ms === 'number', String(r.ms));
   chk('没调用任何 API（几乎瞬间返回）', Date.now() - t0 < 2000, (Date.now() - t0) + 'ms');
 
+  /* 有钥匙但没模型名 —— 2026-10-20 新加的一道闸（原来会拿着空模型名去发请求） */
+  cfgMod.set('apiKey', 'MAINKEY');
+  cfgMod.set('model', '');
+  const r2 = await lt.describe({ fromChat: true });
+  chk('有钥匙没模型名 ⇒ 判盲（不发那种注定 400 的请求）',
+    r2.via === 'blind' && /模型名/.test(r2.why || ''), r2.why);
+
   const logTxt = fs.existsSync(lt.LOG) ? fs.readFileSync(lt.LOG, 'utf8') : '';
-  chk('★ look.log 里真落了一行（这就是"哪一档给的"的凭据）',
+  chk('★ look.log 里真落了行（这就是"哪一档给的"的凭据）',
     /via=blind/.test(logTxt), logTxt.trim().split('\n').slice(-1)[0] || '(空)');
-  chk('日志里不出现密钥', logTxt.length > 0 && !/MAINKEY|SCREENKEY/.test(logTxt), '日志里看到了 key');
+  chk('日志里不出现密钥', logTxt.length > 0 && !/MAINKEY/.test(logTxt), '日志里看到了 key');
 
   fs.rmSync(HOME, { recursive: true, force: true });
   console.log('');
