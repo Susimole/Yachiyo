@@ -1,7 +1,7 @@
 {
   "name": "yachiyo",
   "productName": "Yachiyo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "一个能陪着你的开源 AI 桌宠 —— 分层立绘 + 网格形变骨架 + 会记事的大脑",
   "license": "MIT",
   "main": "src/main/index.cjs",
