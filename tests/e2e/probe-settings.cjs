@@ -238,6 +238,29 @@ async function main() {
     !!hue && !hue.err && hue.topColor !== hue.bottomColor, hue);
   chk('  色相条本身是竖长的（宽 < 高）', !!hue && hue.w < hue.h, hue && [hue.w, hue.h]);
 
+  /* ★ 2026-10-21 他要求：**松手不许关**，只有点弹窗外边才关 */
+  const stay = await PANEL.ev(`(async () => {
+    const open1 = !!document.querySelector('.pal-pop');
+    const sq = document.querySelector('#pMain .picksq');
+    if (!open1 && sq) { sq.click(); await new Promise(r => setTimeout(r, 260)); }
+    const pal = document.querySelector('.pal-pop .pal');
+    if (!pal) return { err: '调色板没开着' };
+    const sv = pal.querySelector('.pal-sv');
+    const r = sv.getBoundingClientRect();
+    const at = (fx, fy) => ({ clientX: r.left + r.width * fx, clientY: r.top + r.height * fy, bubbles: true, pointerId: 9 });
+    sv.dispatchEvent(new PointerEvent('pointerdown', at(0.4, 0.4)));
+    sv.dispatchEvent(new PointerEvent('pointermove', at(0.55, 0.5)));
+    sv.dispatchEvent(new PointerEvent('pointerup', at(0.55, 0.5)));
+    await new Promise(r2 => setTimeout(r2, 500));      // 等落盘 + 那条"重画"广播跑完
+    const afterUp = !!document.querySelector('.pal-pop');
+    /* 点「面板自己的空白处」不算外面（那算同一张卡）；这里点 body 才算外面 */
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    await new Promise(r2 => setTimeout(r2, 300));
+    return { afterUp, afterOutside: !!document.querySelector('.pal-pop') };
+  })()`);
+  chk('★ **松手之后弹窗不关**（他 2026-10-21 明确要求）', !!stay && stay.afterUp === true, stay);
+  chk('★ 点弹窗外面才关', !!stay && stay.afterOutside === false, stay);
+
   /*
    * ⚠️ 2026-10-21 改判据：原来断言"松手后的颜色 ≠ 拖之前"。
    *    可隔离 HOME 里上一次跑探针**已经把颜色改成同一个值**了，

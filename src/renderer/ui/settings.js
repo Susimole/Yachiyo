@@ -359,6 +359,19 @@ function makePalette(startHex, hooks) {
 }
 
 /**
+ * ★★ 2026-10-21：调色板弹窗还开着吗 / 这次开着的期间改过颜色吗。
+ *
+ *   他报「不要松了鼠标就立刻关闭调色板，点击调色板之外才关」。
+ *   根因不在弹窗自己身上：**改 `accent` 会让整页重画**（见 `initSettings` 里
+ *   `if (k === 'accent') showPage(curPage)`），而 `showPage` 开场就 `closeSelectPop()` ——
+ *   于是「松手 → 落盘 → 广播 → 重画 → 浮层被收」，看着就像松手就关。
+ *   ⇒ 弹窗开着的时候先别重画（颜色本身已经通过内联 `--accent` 实时变了），
+ *     等它真关上再补一次重画，把该同步的地方同步掉。
+ */
+let paletteOpen = false;
+let paletteDirty = false;
+
+/**
  * 点小方块 → 弹出调色板（2026-10-21 加的）。
  *
  * 他的话：「我需要的仅仅是最初唤出的调色板的小圆点可拖动实时变色而已」
@@ -367,7 +380,8 @@ function makePalette(startHex, hooks) {
  *   我们管不了。现在弹窗是我们自己画的，圆点想怎么拖就怎么拖。
  *
  * 交互：拖动中**只改显示**（`onPreview`，他能实时看到颜色变），
- *      松手才落盘（`onCommit`）。点外面 / Esc / 窗口尺寸变了就收起来。
+ *      松手才落盘（`onCommit`）。**只在点弹窗外面 / Esc / 窗口尺寸变了才关**
+ *      —— 松手不关（他 2026-10-21 特意要求的）。
  * ⚠️ 浮层挂到 `.card` 上而不是行里：行会被 `showPage` 整片重画，
  *    挂在行里滚一下就跟着跑了（下拉那张浮层当年也是这么修的）。
  */
@@ -376,7 +390,10 @@ function openPalettePopup(trigger, startHex, hooks) {
   const host = document.querySelector('.card') || document.body;
   const pop = document.createElement('div');
   pop.className = 'pal-pop';
-  pop.appendChild(makePalette(startHex, hooks));
+  pop.appendChild(makePalette(startHex, {
+    onPreview: hooks.onPreview,
+    onCommit: (h) => { paletteDirty = true; hooks.onCommit(h); },   // 记一笔"改过"，关窗时补重画
+  }));
   host.appendChild(pop);            // 先入 DOM 再量尺寸，否则 offsetWidth 是 0
 
   const hb = host.getBoundingClientRect();
@@ -397,11 +414,22 @@ function openPalettePopup(trigger, startHex, hooks) {
     pop.remove();
     trigger.classList.remove('open');
     if (closeOpenPop === close) closeOpenPop = null;
+    paletteOpen = false;
+    /*
+     * 开着的时候改过颜色 → 补一次重画（那期间我们把整页重画压住了，见上面那段）。
+     * ⚠️ 放到下一个 tick：此刻可能正处在 `showPage` 里（它开场就 closeSelectPop），
+     *    同步再调一次 showPage 会自己往里套。
+     */
+    if (paletteDirty) {
+      paletteDirty = false;
+      setTimeout(() => { try { showPage(curPage); } catch { /* 页面没了就算了 */ } }, 0);
+    }
   };
   document.addEventListener('mousedown', onOutside, true);
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', close, true);
   trigger.classList.add('open');
+  paletteOpen = true;
   closeOpenPop = close;             // showPage 重画时会调 closeSelectPop() 收掉
   return close;
 }
@@ -689,8 +717,20 @@ export function initSettings() {
    *    任何引用了。菜单 / 聊天窗同理，三页共用 ui/host.js。
    */
   api = makeHost((k) => {
-    // 主题/强调色变了 → 整页重画（样式变量是内联的，不重画会有一半是旧的）
-    if (k === 'theme' || k === 'accent') { showPage(curPage); return; }
+    /*
+     * 主题/强调色变了 → 整页重画（样式变量是内联的，不重画会有一半是旧的）
+     *
+     * ⚠️⚠️ 2026-10-21：**调色板弹窗开着的时候先别重画**。
+     *    他报「不要松了鼠标就立刻关闭调色板」—— 根因就在这儿：
+     *    松手 → 落盘 → 广播 accent → 这里 showPage → showPage 开场 closeSelectPop()
+     *    ⇒ 弹窗被顺手收掉，看着像"松手即关"。
+     *    颜色本身早就通过内联 `--accent` 实时生效了，所以这里压住不影响观感；
+     *    等他关掉弹窗，`openPalettePopup` 的 close() 会补一次重画。
+     */
+    if (k === 'theme' || k === 'accent') {
+      if (paletteOpen) { paletteDirty = true; return; }
+      showPage(curPage); return;
+    }
     // ¥/$ 和汇率变了 → 只重画用量卡上的金额（其余一个字不用动）
     if (k === 'currency' || k === 'usdRate') { usagePaint?.(); usageChartPaint?.(); return; }
     /*
