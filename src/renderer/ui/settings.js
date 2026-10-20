@@ -313,7 +313,12 @@ function makePalette(startHex, hooks) {
     dot.style.left = (cur.s * 100) + '%';
     dot.style.top = ((1 - cur.v) * 100) + '%';
     dot.style.background = here;
-    hueDot.style.left = (cur.h / 360 * 100) + '%';
+    /*
+     * ⚠️⚠️ 色相条是**竖的**（宽 16 / 高 112），所以它的进度要走 `top`。
+     *     第一版我照抄了方块那行的 `left` —— 结果拖着上下没反应
+     *     （只有在那 16px 宽的条里左右蹭才动），他当场看出来了：「你做成左右了 hhh」。
+     */
+    hueDot.style.top = (cur.h / 360 * 100) + '%';
     return here;
   };
   const take = (e) => {
@@ -321,7 +326,11 @@ function makePalette(startHex, hooks) {
     const r = (drag === 'sv' ? sv : hueEl).getBoundingClientRect();
     const px = Math.min(1, Math.max(0, (e.clientX - r.left) / (r.width || 1)));
     const py = Math.min(1, Math.max(0, (e.clientY - r.top) / (r.height || 1)));
-    if (drag === 'sv') { cur.s = px; cur.v = 1 - py; } else { cur.h = px * 360; }
+    /*
+     * ⚠️ 色相条是**竖的** ⇒ 用 `py`（上下）；方块才是横轴饱和度 + 纵轴亮度。
+     *   第一版把色相也写成了 `px`，于是上下拖不动 —— 他 2026-10-21 看出来了。
+     */
+    if (drag === 'sv') { cur.s = px; cur.v = 1 - py; } else { cur.h = py * 360; }
     const here = paint();
     if (hooks && hooks.onPreview) hooks.onPreview(here);
   };

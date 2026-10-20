@@ -341,8 +341,9 @@ html,body{
   border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.35);
   pointer-events:none;
 }
+/* 色相条的把手：条是竖的，所以它是一个**横着的小标尺**，靠 top 走位 */
 .pal-hue-dot{
-  position:absolute; left:50%; top:100%; width:20px; height:7px; margin:-3.5px 0 0 -10px;
+  position:absolute; left:50%; top:0; width:20px; height:7px; margin:-3.5px 0 0 -10px;
   border-radius:4px; border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.35);
   pointer-events:none;
 }

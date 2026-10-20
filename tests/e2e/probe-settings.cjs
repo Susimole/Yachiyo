@@ -201,7 +201,9 @@ async function main() {
     }
     sv.dispatchEvent(new PointerEvent('pointerup', at(0.95, 0.8)));
     await new Promise(r => setTimeout(r, 350));
-    return { before, seen, after: hexEl ? hexEl.textContent : '', popup: true,
+    let saved = '';
+    try { const c = await window.yachiyo.cfg.all(); saved = String(c && c.accent || ''); } catch { /* 读不到就算了 */ }
+    return { before, seen, after: hexEl ? hexEl.textContent : '', saved, popup: true,
              w: Math.round(r.width), h: Math.round(r.height) };
   })()`);
   chk('★ 面板上是一颗小方块（不是把调色板摊在页面里）', !!drag && !drag.err, drag && (drag.err || 'ok'));
@@ -210,9 +212,41 @@ async function main() {
   chk('★ **拖动中每一帧都在实时变色**（不是松手才变）',
     !!drag && Array.isArray(drag.seen) && drag.seen.length === 3
       && drag.seen[0] !== drag.seen[1] && drag.seen[1] !== drag.seen[2], drag && drag.seen);
-  chk('★ 松手后色值合法 #rrggbb、且和开始时不同',
-    !!drag && /^#[0-9a-f]{6}$/i.test(String(drag.after || '')) && drag.after !== drag.before,
-    drag && { before: drag.before, after: drag.after });
+  /*
+   * ★ 2026-10-21：色相条是**竖的**，必须"上下拖"才变色。
+   *   第一版我把它当横的（用 clientX 算），拖着上下没反应 —— 他当场看出来了。
+   *   这条钉的就是横竖：固定 x 只改 y，颜色必须变。
+   */
+  const hue = await PANEL.ev(`(async () => {
+    const sq = document.querySelector('#pMain .picksq');
+    const hexEl = sq && sq.closest('.cwrap') ? sq.closest('.cwrap').querySelector('.hex') : null;
+    if (!document.querySelector('.pal-pop')) { if (sq) sq.click(); await new Promise(r => setTimeout(r, 250)); }
+    const bar = document.querySelector('.pal-pop .pal-hue');
+    if (!bar) return { err: '没有色相条 .pal-hue' };
+    const r = bar.getBoundingClientRect();
+    const at = (fy) => ({ clientX: r.left + r.width / 2, clientY: r.top + r.height * fy, bubbles: true, pointerId: 3 });
+    bar.dispatchEvent(new PointerEvent('pointerdown', at(0.08)));
+    const topColor = hexEl ? hexEl.textContent : '';
+    bar.dispatchEvent(new PointerEvent('pointermove', at(0.9)));   // 固定 x，只改 y
+    await new Promise(r2 => setTimeout(r2, 120));
+    const bottomColor = hexEl ? hexEl.textContent : '';
+    bar.dispatchEvent(new PointerEvent('pointerup', at(0.9)));
+    await new Promise(r2 => setTimeout(r2, 250));
+    return { topColor, bottomColor, w: Math.round(r.width), h: Math.round(r.height) };
+  })()`);
+  chk('★ 色相条是**竖的**（上下拖 / 只改 y 就变色）',
+    !!hue && !hue.err && hue.topColor !== hue.bottomColor, hue);
+  chk('  色相条本身是竖长的（宽 < 高）', !!hue && hue.w < hue.h, hue && [hue.w, hue.h]);
+
+  /*
+   * ⚠️ 2026-10-21 改判据：原来断言"松手后的颜色 ≠ 拖之前"。
+   *    可隔离 HOME 里上一次跑探针**已经把颜色改成同一个值**了，
+   *    起点正好等于终点 → 假红。真正该验的是**松手落盘了没有**。
+   */
+  chk('★ 松手后色值合法 #rrggbb', !!drag && /^#[0-9a-f]{6}$/i.test(String(drag.after || '')), drag && drag.after);
+  chk('★ 松手后**真的写进 config 了**（不是只在界面上变）',
+    !!drag && String(drag.saved || '').toLowerCase() === String(drag.after || '').toLowerCase(),
+    drag && { after: drag.after, saved: drag.saved });
 
   // 关掉面板不报错
   await PANEL.ev(`(() => { const b = document.querySelector('.close, #close, .p-x'); if (b) b.click(); return true; })()`);
