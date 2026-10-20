@@ -215,26 +215,56 @@ async function mountUsageChart(cell) {
    */
   const chart = () => {
     const P = data.points;
-    const W = 640; const H = 128; const PAD = 16;
+    /*
+     * ★★ 2026-10-21（他要的）：**每根柱子都显示 token 和金额**，不再只标最后一根。
+     *   层级照他的草图：**数字最大 → `token` 小字居中 → 金额比单位略大**。
+     *   ⚠️ 他定的口径：日 / 周 的 token 一律用 **k**；月视图按量级用 **k 或 m**。
+     *   ⚠️ 24 格时每格只有 26px，字号只能给到 6.5/4/5.5（再小就糊）——
+     *      所以图上不追求看清，**明细靠悬停**（每根柱子挂了 `<title>`）。
+     *   ⚠️ 高度 128 → **176**：三行标签要有地方，否则最矮那几根的标签会压到横轴上。
+     */
+    const W = 640; const H = 176; const PAD = 16;
     const n = P.length;
     const BW = n > 20 ? 14 : n > 10 ? 20 : 54;
     const gap = (W - PAD * 2 - BW * n) / Math.max(1, n - 1);
     const max = Math.max(data.peak, 1e-9);
+
+    /** token 数 → 短标签：日/周 用 k；月按量级 k / m（他 2026-10-21 定的） */
+    const tok = (v) => {
+      const x = Math.round(Number(v) || 0);
+      if (!x) return '0';
+      if (range === 'month' && x >= 1e6) return (x / 1e6).toFixed(x >= 1e7 ? 0 : 1) + 'm';
+      const k = x / 1000;
+      return (k >= 10 ? Math.round(k) : Math.round(k * 10) / 10) + 'k';
+    };
+    /* 字号按格子密度分三档：周(7 根) / 日(24 根) / 月(30 根) */
+    const S = n <= 10 ? { num: 10, unit: 6, money: 7.5 }
+      : n <= 26 ? { num: 6.5, unit: 4, money: 5.5 }
+        : { num: 5.5, unit: 3.8, money: 5 };
+
     let bars = '';
     P.forEach((p, i) => {
-      const h = Math.max(2, Math.round((p.cost / max) * (H - 34)));
+      const h = Math.max(2, Math.round((p.cost / max) * (H - 22 - 64)));
       const x = PAD + i * (BW + gap);
       const y = H - 22 - h;
       const isNow = i === n - 1;                       // 最后一格 = 现在（今天 / 这一小时）
-      bars += `<rect x="${x.toFixed(1)}" y="${y}" width="${BW}" height="${h}" rx="${Math.min(4, BW / 3)}"` +
-        ` fill="var(--accent)" opacity="${isNow ? 1 : 0.42}"></rect>`;
-      if (isNow && p.cost > 0) {
-        bars += `<text x="${(x + BW / 2).toFixed(1)}" y="${(y - 5).toFixed(1)}" font-size="10.5"` +
-          ` text-anchor="middle" fill="var(--accent)">${te(money(p.cost))}</text>`;
-      }
+      /* `<title>` 必须写在 rect **里面** —— SVG 里它是子元素，放外面挂不上 */
+      bars += `<rect x="${x.toFixed(1)}" y="${y}" width="${BW}" height="${h}" rx="${Math.min(4, BW / 3)}"`
+        + ` fill="var(--accent)" opacity="${isNow ? 1 : 0.42}">`
+        + `<title>${te(p.label)} · ${te(tok(p.tokens))} token · ${te(money(p.cost))}</title></rect>`;
+
+      const cx = (x + BW / 2).toFixed(1);
+      const ny = Math.round(Math.max(11, y - 22));     // 三行标签贴着柱顶，但不许顶出画面
+      bars += `<text x="${cx}" y="${ny}" font-size="${S.num}" text-anchor="middle"`
+        + ` fill="var(--accent)" font-weight="600">${te(tok(p.tokens))}</text>`
+        + `<text x="${cx}" y="${ny + S.num + 1}" font-size="${S.unit}" text-anchor="middle"`
+        + ` fill="var(--sub)">token</text>`
+        + `<text x="${cx}" y="${ny + S.num + S.unit + 4}" font-size="${S.money}" text-anchor="middle"`
+        + ` fill="var(--accent)">${p.cost > 0 ? te(money(p.cost)) : '—'}</text>`;
+
       // 横轴只标首 / 中 / 尾 —— 24 格全标会挤成一坨
       if (i === 0 || i === n - 1 || (n > 10 && i === Math.floor(n / 2))) {
-        bars += `<text x="${(x + BW / 2).toFixed(1)}" y="${H - 6}" font-size="10"` +
+        bars += `<text x="${cx}" y="${H - 6}" font-size="10"` +
           ` text-anchor="middle" fill="var(--sub)">${te(p.label)}</text>`;
       }
     });

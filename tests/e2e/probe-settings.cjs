@@ -271,6 +271,41 @@ async function main() {
     !!drag && String(drag.saved || '').toLowerCase() === String(drag.after || '').toLowerCase(),
     drag && { after: drag.after, saved: drag.saved });
 
+  /* ══════════ ⑦ 用量柱状图：每根柱子都要有 token + 金额（2026-10-21 加的） ══════════
+     他要求：不再只标最后一根，每根都显示「token 数 / token / 金额」三行。 */
+  console.log('');
+  console.log('【用量柱状图：每根柱子都有标签】');
+  const chart = await PANEL.ev(`(async () => {
+    /* 走势图不一定在「高级」页 —— 逐页找带 token 那个 svg，别猜 */
+    let best = null;
+    for (const k of ['habit', 'bubble', 'weather', 'ai', 'adv']) {
+      const nav = document.querySelector('#navs .nav[data-k="' + k + '"]');
+      if (nav) nav.click();
+      await new Promise(r => setTimeout(r, 320));
+      const svgs = Array.from(document.querySelectorAll('#pMain svg'));
+      const hit = svgs.find(s => Array.from(s.querySelectorAll('text')).some(t => t.textContent === 'token'));
+      if (hit) { best = hit; break; }
+    }
+    if (!best) return { err: '五页里都没找到带 token 标签的走势图' };
+    const rects = best.querySelectorAll('rect').length;
+    const txt = Array.from(best.querySelectorAll('text')).map(t => t.textContent);
+    return {
+      rects,
+      units: txt.filter(t => t === 'token').length,
+      money: txt.filter(t => /[¥$]/.test(t) || t === '—').length,
+      nums: txt.filter(t => /^[0-9.]+[km]?$/.test(t)).length,
+      tips: best.querySelectorAll('title').length,
+    };
+  })()`);
+  const cOk = !!chart && !chart.err;
+  chk('★ 走势图找到了（有 rect）', cOk && chart.rects > 0, chart);
+  chk('★ **每根柱子都有「token」那一行**（数量 = 柱子数）',
+    cOk && chart.units === chart.rects, chart && { rects: chart.rects, units: chart.units });
+  chk('★ 每根柱子都有金额（有数字或「—」占位）',
+    cOk && chart.money === chart.rects, chart && { rects: chart.rects, money: chart.money });
+  chk('★ 每根柱子都有 token 数字', cOk && chart.nums >= chart.rects, chart && { rects: chart.rects, nums: chart.nums });
+  chk('  悬停明细（<title>）每根都挂了', cOk && chart.tips === chart.rects, chart && { rects: chart.rects, tips: chart.tips });
+
   // 关掉面板不报错
   await PANEL.ev(`(() => { const b = document.querySelector('.close, #close, .p-x'); if (b) b.click(); return true; })()`);
   await sleep(400);
