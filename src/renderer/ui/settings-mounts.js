@@ -276,7 +276,7 @@ async function mountUsageChart(cell) {
         + `<title>${te(p.label)} · ${te(tok(p.tokens))} token · ${te(money(p.cost))}</title></rect>`;
 
       const cx = (x + BW / 2).toFixed(1);
-      const ny = Math.round(Math.max(12, y - 36));      // 三行标签贴着柱顶再上移 12px（他要求）
+      const ny = Math.round(Math.max(12, y - 64));      // 三行标签上移（12 + 追加 28 = 40；放大后间距要跟着缩放）
       bars += `<text x="${cx}" y="${ny}" font-size="${S.num}" text-anchor="middle"`
         + ` fill="var(--accent)" font-weight="600">${te(tok(p.tokens))}</text>`
         + `<text x="${cx}" y="${ny + S.num + 1}" font-size="${S.unit}" text-anchor="middle"`
