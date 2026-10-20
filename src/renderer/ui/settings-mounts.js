@@ -240,7 +240,7 @@ async function mountUsageChart(cell) {
     const span = winSpan();
     const i0 = winIndex(data.points.length, span);
     const P = data.points.slice(i0, i0 + span);
-    const W = 640; const H = 176; const PAD = 16;
+    const W = 640; const H = 196; const PAD = 16;
     const n = P.length;
     /* 窗口化之后最多 7 根 ⇒ 宽度可以给足；仍留一档给周视图 */
     const BW = n >= 7 ? 62 : n >= 4 ? 78 : 96;
@@ -259,13 +259,13 @@ async function mountUsageChart(cell) {
      * 字号：窗口化后每格 ~90px，三档统一**放大 25%**（他要求 ×1.25）。
      * 周 10→12.5 / 日 6.5→8.1 / 月 5.5→6.9（单位、金额同比例）。
      */
-    const K = 1.25;
+    const K = 1.25 * 1.75;   // 2026-10-21 追加：再放大 75%
     const base = n <= 8 ? { num: 10, unit: 6, money: 7.5 } : { num: 6.5, unit: 4, money: 5.5 };
     const S = { num: base.num * K, unit: base.unit * K, money: base.money * K };
 
     let bars = '';
     P.forEach((p, i) => {
-      const h = Math.max(2, Math.round((p.cost / max) * (H - 22 - 64)));
+      const h = Math.max(2, Math.round((p.cost / max) * (H - 22 - 88)));
       const x = PAD + i * (BW + gap);
       const y = H - 22 - h;
       const gIdx = i0 + i;                             // 在整段里的真实下标
@@ -276,7 +276,7 @@ async function mountUsageChart(cell) {
         + `<title>${te(p.label)} · ${te(tok(p.tokens))} token · ${te(money(p.cost))}</title></rect>`;
 
       const cx = (x + BW / 2).toFixed(1);
-      const ny = Math.round(Math.max(12, y - 24));      // 三行标签贴着柱顶，但不许顶出画面
+      const ny = Math.round(Math.max(12, y - 36));      // 三行标签贴着柱顶再上移 12px（他要求）
       bars += `<text x="${cx}" y="${ny}" font-size="${S.num}" text-anchor="middle"`
         + ` fill="var(--accent)" font-weight="600">${te(tok(p.tokens))}</text>`
         + `<text x="${cx}" y="${ny + S.num + 1}" font-size="${S.unit}" text-anchor="middle"`
