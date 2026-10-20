@@ -172,6 +172,48 @@ async function main() {
   chk('★ 五个设计要点：没有 JS 异常',
     await PANEL.ev(`(window.__errs || []).length`) === 0, await PANEL.ev(`JSON.stringify(window.__errs || [])`));
 
+  /* ══════════ ⑥ 调色盘：点小方块弹出来，圆点能拖（2026-10-21） ══════════
+     他原话：「我需要的仅仅是最初唤出的调色板的小圆点可拖动实时变色而已」
+     ⇒ 面板上只留一颗小方块，点它才弹；弹出来那块板里的圆点必须能拖、且**实时**变色。 */
+  console.log('');
+  console.log('【调色盘：点小方块才弹，圆点拖得动】');
+  const drag = await PANEL.ev(`(async () => {
+    const nav = document.querySelector('#navs .nav[data-k="habit"]');
+    if (nav) nav.click();
+    await new Promise(r => setTimeout(r, 300));
+    const sq = document.querySelector('#pMain .picksq');
+    if (!sq) return { err: '面板上没有 .picksq 小方块' };
+    const hexEl = sq.closest('.cwrap') ? sq.closest('.cwrap').querySelector('.hex') : null;
+    const before = hexEl ? hexEl.textContent : '';
+    sq.click();
+    await new Promise(r => setTimeout(r, 250));
+    const pal = document.querySelector('.pal-pop .pal');
+    if (!pal) return { err: '点了小方块但没弹出调色板' };
+    const sv = pal.querySelector('.pal-sv');
+    const r = sv.getBoundingClientRect();
+    const at = (fx, fy) => ({ clientX: r.left + r.width * fx, clientY: r.top + r.height * fy, bubbles: true, pointerId: 1 });
+    const seen = [];
+    sv.dispatchEvent(new PointerEvent('pointerdown', at(0.8, 0.2)));
+    for (const [fx, fy] of [[0.85, 0.35], [0.9, 0.6], [0.95, 0.8]]) {
+      sv.dispatchEvent(new PointerEvent('pointermove', at(fx, fy)));
+      await new Promise(r2 => setTimeout(r2, 60));
+      if (hexEl) seen.push(hexEl.textContent);
+    }
+    sv.dispatchEvent(new PointerEvent('pointerup', at(0.95, 0.8)));
+    await new Promise(r => setTimeout(r, 350));
+    return { before, seen, after: hexEl ? hexEl.textContent : '', popup: true,
+             w: Math.round(r.width), h: Math.round(r.height) };
+  })()`);
+  chk('★ 面板上是一颗小方块（不是把调色板摊在页面里）', !!drag && !drag.err, drag && (drag.err || 'ok'));
+  chk('★ 点一下小方块 → 弹出调色板', !!drag && drag.popup === true, drag && drag.err);
+  chk('  弹出的板有尺寸（0 宽 0 高就点不到）', !!drag && drag.w > 40 && drag.h > 40, drag && [drag.w, drag.h]);
+  chk('★ **拖动中每一帧都在实时变色**（不是松手才变）',
+    !!drag && Array.isArray(drag.seen) && drag.seen.length === 3
+      && drag.seen[0] !== drag.seen[1] && drag.seen[1] !== drag.seen[2], drag && drag.seen);
+  chk('★ 松手后色值合法 #rrggbb、且和开始时不同',
+    !!drag && /^#[0-9a-f]{6}$/i.test(String(drag.after || '')) && drag.after !== drag.before,
+    drag && { before: drag.before, after: drag.after });
+
   // 关掉面板不报错
   await PANEL.ev(`(() => { const b = document.querySelector('.close, #close, .p-x'); if (b) b.click(); return true; })()`);
   await sleep(400);

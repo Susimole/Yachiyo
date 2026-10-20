@@ -294,8 +294,12 @@ html,body{
 .pad.scroll{ min-height:0; overflow-y:auto; }
 
 /* ============================================================
-   主题色选择 —— 预设色卡 + 调色盘
-   ============================================================ */
+   主题色选择 —— 预设色卡 + **自绘调色盘**（2026-10-21 换掉原生 input[type=color]）
+   ============================================================
+   为什么换：原生那个方块点开弹的是 Chromium / 系统取色器，**里面拖不动**，
+   他 2026-10-21 报「只可点击不可拖动」。自己画一条色相条 + 一块饱和度×明度方块，
+   拖不拖得动就全听我们的了。
+*/
 .cwrap{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 .swatches{ display:flex; gap:6px; }
 .swatch{
@@ -307,14 +311,41 @@ html,body{
 .swatch.on{
   box-shadow:0 0 0 2px var(--bg), 0 0 0 4px currentColor;
 }
-/* 自定义调色盘：把原生那圈边框去掉，做成一颗跟色卡一样大的方块 */
-.cwrap input[type=color]{
-  width:26px; height:26px; padding:0; cursor:pointer;
-  border:1px solid var(--line); border-radius:8px;
-  background:none; -webkit-appearance:none; appearance:none;
+/* 自绘调色盘：**点小方块才弹**（2026-10-21）。他原话：
+   「我需要的仅仅是最初唤出的调色板的小圆点可拖动实时变色而已」
+   ⇒ 面板上只留一颗 26×26 的小方块，弹窗里才是那块能拖的板。 */
+.picksq{
+  width:26px; height:26px; border-radius:8px; cursor:pointer;
+  border:1px solid var(--line); background:#0A7EA4;
+  transition:transform .12s, box-shadow .12s;
 }
-.cwrap input[type=color]::-webkit-color-swatch-wrapper{ padding:2px; }
-.cwrap input[type=color]::-webkit-color-swatch{ border:0; border-radius:6px; }
+.picksq:hover{ transform:scale(1.08); }
+.picksq.open{ box-shadow:0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+.pal-pop{
+  position:absolute; z-index:60; padding:9px; border-radius:11px;
+  background:var(--bg); border:1px solid var(--line);
+  box-shadow:0 10px 26px rgba(0,0,0,.22);
+}
+.pal{ display:flex; gap:9px; align-items:stretch; }
+.pal-sv, .pal-hue{ position:relative; border-radius:8px; border:1px solid var(--line); }
+.pal-sv{
+  width:168px; height:112px; cursor:crosshair; overflow:hidden;
+  /* 两层渐变（白→纯色 / 上黑）由 JS 按当前色相现铺 */
+}
+.pal-hue{
+  width:16px; height:112px; cursor:pointer;
+  background:linear-gradient(to bottom,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00);
+}
+.pal-dot{
+  position:absolute; left:100%; top:0; width:13px; height:13px; margin:-6.5px 0 0 -6.5px;
+  border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.35);
+  pointer-events:none;
+}
+.pal-hue-dot{
+  position:absolute; left:50%; top:100%; width:20px; height:7px; margin:-3.5px 0 0 -10px;
+  border-radius:4px; border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.35);
+  pointer-events:none;
+}
 .cwrap .hex{
   font:12px/1 ui-monospace,Consolas,monospace; color:var(--sub);
   letter-spacing:.3px; user-select:text;

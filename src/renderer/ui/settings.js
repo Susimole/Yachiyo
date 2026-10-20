@@ -233,6 +233,170 @@ function mountCustoms(root) {
 
 export const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 
+/* ============================================================
+   颜色换算（2026-10-21 加的，给「主题色」那块自绘调色盘用）
+   ============================================================
+   为什么不用现成的库：整个工程零依赖，为两个函数引一个色板库不值。
+   ⚠️ `hexToHsv` 遇到不合法的串**回落到默认海蓝** —— 他手改 config.json
+      写成 `#abc` 或拼错时，调色盘也得能开、能拖，不能白屏。
+*/
+function hexToHsv(hexStr) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hexStr || '').trim());
+  const n = m ? parseInt(m[1], 16) : 0x0A7EA4;
+  const r = ((n >> 16) & 255) / 255;
+  const g = ((n >> 8) & 255) / 255;
+  const b = (n & 255) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  if (d) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s: max ? d / max : 0, v: max };
+}
+
+function hsvToHex(h, s, v) {
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) { r = c; g = x; }
+  else if (h < 120) { r = x; g = c; }
+  else if (h < 180) { g = c; b = x; }
+  else if (h < 240) { g = x; b = c; }
+  else if (h < 300) { r = x; b = c; }
+  else { r = c; b = x; }
+  const to = (q) => Math.round((q + m) * 255).toString(16).padStart(2, '0');
+  return '#' + to(r) + to(g) + to(b);
+}
+
+/**
+ * 自绘调色盘（**可拖**）—— 「主题色」和「文字颜色」两行共用这一个。
+ *
+ * 2026-10-21 加。起因：他报「主题色调色板只可点击不可拖动」，
+ * 而原来那两处用的都是原生 `<input type="color">` —— 点开弹的是
+ * Chromium / 系统取色器，里面拖不拖得动**我们完全管不了**。所以自己画。
+ *
+ * 结构：左边「饱和度 × 明度」方块（横轴=饱和度、纵轴=亮度），右边竖着色相条。
+ * @param {string} startHex 当前颜色
+ * @param {{onPreview:(hex:string)=>void, onCommit:(hex:string)=>void}} hooks
+ *   `onPreview` = 拖动**中**（只改显示，别写盘）；`onCommit` = 松手那一下（该落盘了）。
+ * @returns {HTMLElement} 直接 append 进那一行
+ *
+ * ⚠️ 监听挂在**元素自己**身上（不是 window）：`showPage` 每次重画都会重建这一块，
+ *    挂 window 的话监听会一层层累积，关都关不掉。
+ * ⚠️ 拖动中千万别写 config.json —— 跟 range 那条同一个道理，磁盘会被刷爆。
+ */
+function makePalette(startHex, hooks) {
+  const pal = document.createElement('div');
+  pal.className = 'pal';
+  pal.innerHTML = '<div class="pal-sv"><i class="pal-dot"></i></div>'
+    + '<div class="pal-hue"><i class="pal-hue-dot"></i></div>';
+  const sv = pal.querySelector('.pal-sv');
+  const dot = pal.querySelector('.pal-dot');
+  const hueEl = pal.querySelector('.pal-hue');
+  const hueDot = pal.querySelector('.pal-hue-dot');
+
+  const cur = hexToHsv(startHex);
+  let drag = null;                 // 'sv' | 'hue' | null
+
+  const paint = () => {
+    const pure = hsvToHex(cur.h, 1, 1);
+    sv.style.background = 'linear-gradient(to top, #000, rgba(0,0,0,0)), '
+      + 'linear-gradient(to right, #fff, ' + pure + ')';
+    const here = hsvToHex(cur.h, cur.s, cur.v);
+    dot.style.left = (cur.s * 100) + '%';
+    dot.style.top = ((1 - cur.v) * 100) + '%';
+    dot.style.background = here;
+    hueDot.style.left = (cur.h / 360 * 100) + '%';
+    return here;
+  };
+  const take = (e) => {
+    if (!drag) return;
+    const r = (drag === 'sv' ? sv : hueEl).getBoundingClientRect();
+    const px = Math.min(1, Math.max(0, (e.clientX - r.left) / (r.width || 1)));
+    const py = Math.min(1, Math.max(0, (e.clientY - r.top) / (r.height || 1)));
+    if (drag === 'sv') { cur.s = px; cur.v = 1 - py; } else { cur.h = px * 360; }
+    const here = paint();
+    if (hooks && hooks.onPreview) hooks.onPreview(here);
+  };
+  const begin = (kind) => (e) => {
+    drag = kind;
+    try { e.target.setPointerCapture(e.pointerId); } catch { /* 合成事件没有真的 pointerId */ }
+    take(e);
+    if (e.preventDefault) e.preventDefault();
+  };
+  const end = () => {
+    if (!drag) return;
+    drag = null;
+    if (hooks && hooks.onCommit) hooks.onCommit(paint());
+  };
+  sv.addEventListener('pointerdown', begin('sv'));
+  hueEl.addEventListener('pointerdown', begin('hue'));
+  sv.addEventListener('pointermove', take);
+  hueEl.addEventListener('pointermove', take);
+  sv.addEventListener('pointerup', end);
+  hueEl.addEventListener('pointerup', end);
+  sv.addEventListener('pointercancel', end);
+  hueEl.addEventListener('pointercancel', end);
+
+  paint();
+  return pal;
+}
+
+/**
+ * 点小方块 → 弹出调色板（2026-10-21 加的）。
+ *
+ * 他的话：「我需要的仅仅是最初唤出的调色板的小圆点可拖动实时变色而已」
+ *   ⇒ **不是**把调色板摊在面板上；原来那颗小方块还在，点它才弹。
+ *   之前那颗是原生 `<input type="color">`，弹的是系统取色器 —— 里面拖不动，
+ *   我们管不了。现在弹窗是我们自己画的，圆点想怎么拖就怎么拖。
+ *
+ * 交互：拖动中**只改显示**（`onPreview`，他能实时看到颜色变），
+ *      松手才落盘（`onCommit`）。点外面 / Esc / 窗口尺寸变了就收起来。
+ * ⚠️ 浮层挂到 `.card` 上而不是行里：行会被 `showPage` 整片重画，
+ *    挂在行里滚一下就跟着跑了（下拉那张浮层当年也是这么修的）。
+ */
+function openPalettePopup(trigger, startHex, hooks) {
+  closeSelectPop();                 // 别的地方可能还开着一张下拉
+  const host = document.querySelector('.card') || document.body;
+  const pop = document.createElement('div');
+  pop.className = 'pal-pop';
+  pop.appendChild(makePalette(startHex, hooks));
+  host.appendChild(pop);            // 先入 DOM 再量尺寸，否则 offsetWidth 是 0
+
+  const hb = host.getBoundingClientRect();
+  const tb = trigger.getBoundingClientRect();
+  let x = tb.left - hb.left;
+  let y = tb.bottom - hb.top + 6;
+  if (y + pop.offsetHeight > hb.height - 8) y = Math.max(8, tb.top - hb.top - pop.offsetHeight - 6);
+  if (x + pop.offsetWidth > hb.width - 8) x = Math.max(8, hb.width - pop.offsetWidth - 8);
+  pop.style.left = Math.round(x) + 'px';
+  pop.style.top = Math.round(y) + 'px';
+
+  const onOutside = (e) => { if (!pop.contains(e.target) && !trigger.contains(e.target)) close(); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  const close = () => {
+    document.removeEventListener('mousedown', onOutside, true);
+    window.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('resize', close, true);
+    pop.remove();
+    trigger.classList.remove('open');
+    if (closeOpenPop === close) closeOpenPop = null;
+  };
+  document.addEventListener('mousedown', onOutside, true);
+  window.addEventListener('keydown', onKey, true);
+  window.addEventListener('resize', close, true);
+  trigger.classList.add('open');
+  closeOpenPop = close;             // showPage 重画时会调 closeSelectPop() 收掉
+  return close;
+}
+
 function rowEl(row, ctx) {
   const d = document.createElement('div');
   d.className = 'row';
@@ -350,7 +514,14 @@ function rowEl(row, ctx) {
           s.style.color = s.dataset.c;      // ‹on› 那圈描边用 currentColor
         }
         hex.textContent = ctx.cfg()[row.key] || '';
+        if (typeof syncSq === 'function') syncSq();   // 选色卡时那颗小方块也跟着变（见下）
       };
+
+      /*
+       * ⚠️ `mark()` 里要调 `syncSq`，可它得等 sq 建好 —— 所以这里先声明再赋值，
+       *    别写成 const（那样 `typeof` 判断会撞 TDZ）。
+       */
+      let syncSq = null;
 
       for (const [c, name] of PRESET_COLORS) {
         const s = document.createElement('div');
@@ -363,16 +534,41 @@ function rowEl(row, ctx) {
       }
       wrap.appendChild(box);
 
-      const picker = document.createElement('input');
-      picker.type = 'color';
-      picker.value = /^#[0-9a-f]{6}$/i.test(v) ? v : '#0A7EA4';
-      picker.title = '自己调一个';
-      picker.oninput = async () => { await ctx.set(row.key, picker.value); mark(); };
-      wrap.appendChild(picker);
-
       const hex = document.createElement('span');
       hex.className = 'hex';
       wrap.appendChild(hex);
+
+      /*
+       * ★★ 2026-10-21：那颗小方块还是原来那颗，但**点开弹的是我们自己的调色板**。
+       *
+       *   他报「主题色调色板只可点击不可拖动」，随后又说清楚：「我需要的仅仅是
+       *   最初唤出的调色板的小圆点可拖动实时变色而已」。
+       *   ⇒ 不是把调色板摊在面板上（我第一版就做错了），是**弹窗里的圆点能拖**。
+       *   原来那颗是原生 `<input type="color">`，弹的是 Chromium / 系统取色器，
+       *   里面拖不拖我们管不了 —— 所以换掉，弹我们自己画的。
+       */
+      const sq = document.createElement('div');
+      sq.className = 'picksq';
+      sq.title = '自己调一个';
+      sq.style.background = /^#[0-9a-f]{6}$/i.test(v) ? v : '#0A7EA4';
+      sq.onclick = (e) => {
+        e.stopPropagation();
+        if (closeOpenPop) { closeOpenPop(); return; }   // 再点一下收起
+        openPalettePopup(sq, ctx.cfg()[row.key] || v, {
+          // 拖动中：色块、色号、页面上的 --accent 一起实时跟着走（不写盘）
+          onPreview: (h) => {
+            hex.textContent = h;
+            sq.style.background = h;
+            document.documentElement.style.setProperty('--accent', h);
+          },
+          onCommit: async (h) => { await ctx.set(row.key, h); mark(); },
+        });
+      };
+      syncSq = () => {
+        const cur = String(ctx.cfg()[row.key] || '');
+        sq.style.background = /^#[0-9a-f]{6}$/i.test(cur) ? cur : '#0A7EA4';
+      };
+      wrap.appendChild(sq);
 
       body.appendChild(wrap);
       mark();
@@ -416,14 +612,29 @@ function rowEl(row, ctx) {
     }
 
     case 'color': {
-      const inp = document.createElement('input');
-      inp.type = 'color'; inp.value = v || '#000000';
-      inp.className = 'colorin';
-      inp.onchange = () => ctx.set(row.key, inp.value);
+      /*
+       * ★ 2026-10-21：跟「主题色」那一行同一个套路 —— **小方块 + 点开弹调色板**。
+       *   原来是原生 `<input type="color">`（弹系统取色器、里面拖不动）。
+       *   这一行是「气泡文字颜色」：拖动中只改显示，松手才落盘。
+       */
+      const wrap2 = document.createElement('div');
+      wrap2.className = 'cwrap';
       const code = document.createElement('span');
-      code.className = 'val'; code.style.minWidth = '70px'; code.textContent = v;
-      inp.onchange = () => { code.textContent = inp.value; ctx.set(row.key, inp.value); };
-      body.append(inp, code);
+      code.className = 'val'; code.style.minWidth = '76px'; code.textContent = v;
+      const sq = document.createElement('div');
+      sq.className = 'picksq';
+      sq.title = '自己调一个';
+      sq.style.background = /^#[0-9a-f]{6}$/i.test(v) ? v : '#000000';
+      sq.onclick = (e) => {
+        e.stopPropagation();
+        if (closeOpenPop) { closeOpenPop(); return; }
+        openPalettePopup(sq, v, {
+          onPreview: (h) => { code.textContent = h; sq.style.background = h; },
+          onCommit: (h) => { code.textContent = h; sq.style.background = h; ctx.set(row.key, h); },
+        });
+      };
+      wrap2.append(sq, code);
+      body.append(wrap2);
       break;
     }
 
