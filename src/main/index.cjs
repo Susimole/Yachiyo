@@ -49,6 +49,8 @@ const capture = require('../core/capture.cjs');
 const peeker  = require('../core/peeker.cjs');
 /* ★ 2026-10-20：只为了 `vision:state`（"这台机器看不了图"那条记录） */
 const looktool = require('../core/looktool.cjs');
+/* ★ 2026-10-21：只给探针开的 IPC，见 ./probe.cjs 顶上那段 */
+const probes = require('./probe.cjs');
 /*
  * ★ 游戏检测（2026-10-17 加的）：全屏 + 进程两条一起看，见 core/gamedetect.cjs 顶上那段。
  * ⚠️ 它只负责"判断"，不碰她的状态 —— 判断结果通过 `game:changed` 广播给页面，
@@ -510,12 +512,7 @@ function designClear() {
   return { ok: true };
 }
 
-devOnly(() => {
-  ipcMain.handle('design:load', () => readDesign());
-  ipcMain.handle('design:put', (_e, data) => writeDesign(data && typeof data === 'object' ? data : {}));
-  ipcMain.handle('design:clear', designClear);
-  ipcMain.handle('design:where', () => DESIGN_FILE());
-});
+/* 调试台那四个口子（design:load / put / clear / save）2026-10-21 搬到 ./probe.cjs */
 
 /**
  * 界面调试台「保存成文件」—— 存到桌面，存完**在资源管理器里高亮它**。
@@ -557,7 +554,6 @@ async function designSave(_e, text) {
 }
 
 // ⚠️ 同样只在开发版注册 —— 见上面 design:load 那一族的注释
-devOnly(() => ipcMain.handle('design:save', designSave));
 
 /**
  * ★ **只给探针用**：把「准备睡」掰过去 / 回来。
@@ -570,14 +566,7 @@ devOnly(() => ipcMain.handle('design:save', designSave));
  * ⚠️ 产品流程一次都不调它 —— 真实进出走心跳里的 `review.tick()`。
  *    跟 `ov:probe-raise` 是同一类东西：**为了不改产品代码就能量到真实行为**。
  */
-devOnly(() => ipcMain.handle('probe:sleep', (_e, on) => {
-  // `on` 给 null 就是**纯查询**，不改状态（探针要分开问"设成功没"和"现在什么状态"）
-  if (on === null || on === undefined) return review.isSleeping();
-  review._setSleeping(!!on);
-  // 立刻把状态推给页面 —— 不然要等下一拍心跳（5 秒）才生效，探针得干等
-  overlay.broadcast('sleep:changed', review.isSleeping());
-  return review.isSleeping();
-}));
+/* probe:sleep（把"准备睡"掰过去）2026-10-21 搬到 ./probe.cjs */
 
 /**
  * ★ **只给探针用**：把浮层往上顶一层，或者按 hwnd 插到某个窗口后面。
@@ -696,21 +685,7 @@ ipcMain.handle('app:reveal', async (_e, kind) => {
   return { ok: true, dir: full };
 });
 
-devOnly(() => ipcMain.handle('ov:probe-raise', (_e, kind, afterHwnd) => {
-  const w = overlay.list().get(kind);
-  if (!w || w.isDestroyed()) return { ok: false, why: '窗口不在' };
-  const raw = afterHwnd ? parseInt(String(afterHwnd), 10) : 0;
-  if (raw) {
-    // `insertAfter` 第二参要的是 NodeBuffer / number hwnd
-    const Buffer = require('node:buffer').Buffer;
-    const buf = Buffer.alloc(8);
-    buf.writeBigUInt64LE(BigInt(raw));
-    try { w.insertAfter(buf); } catch (err) { return { ok: false, why: err.message }; }
-  } else {
-    try { w.moveTop(); } catch (err) { return { ok: false, why: err.message }; }
-  }
-  return { ok: true };
-}));
+/* ov:probe-raise（浮层上下顶）2026-10-21 搬到 ./probe.cjs */
 
 /**
  * ★ **只给探针用**：记下每一次浮层窗口被挪/被改尺寸。
@@ -724,27 +699,7 @@ devOnly(() => ipcMain.handle('ov:probe-raise', (_e, kind, afterHwnd) => {
  * ⚠️ 只在**探针调过一次之后**才记，平时零开销。
  */
 const probeBoundsLog = new Map();          // kind -> [{t, from, to}]
-devOnly(() => ipcMain.handle('ov:probe-bounds', (_e, kind, on) => {
-  const w = overlay.list().get(kind);
-  if (!w || w.isDestroyed()) return { ok: false, why: '窗口不在' };
-  if (on === false) { w.__probeBounds = false; return { ok: true, log: probeBoundsLog.get(kind) || [] }; }
-
-  probeBoundsLog.set(kind, []);
-  const orig = w.setBounds.bind(w);
-  w.setBounds = (b, ...rest) => {
-    const from = w.getBounds();
-    const r = orig(b, ...rest);
-    const to = w.getBounds();
-    if (from.x !== to.x || from.y !== to.y || from.width !== to.width || from.height !== to.height) {
-      const log = probeBoundsLog.get(kind) || [];
-      log.push({ t: Date.now(), from: { x: from.x, y: from.y, w: from.width, h: from.height },
-                 to: { x: to.x, y: to.y, w: to.width, h: to.height } });
-      probeBoundsLog.set(kind, log);
-    }
-    return r;
-  };
-  return { ok: true };
-}));
+/* ov:probe-bounds（量 setBounds 的抖动）2026-10-21 搬到 ./probe.cjs */
 
 /**
  * 某个浮层现在开着没有。
@@ -888,10 +843,7 @@ ipcMain.on('win:hide', () => { if (win) { win.hide(); cfg.set('petVisible', fals
  *      托盘这条是 `win.show()` + `setAlwaysOnTop(...)` 两句。要复现就得走他那条。
  *   ⚠️ devOnly：正式版里这个 handler 不存在，页面那边 invoke 会 reject（无害）。
  */
-devOnly(() => ipcMain.handle('probe:tray-toggle', () => {
-  trayApi.toggleShow();
-  return { visible: !!(win && !win.isDestroyed() && win.isVisible()) };
-}));
+/* probe:tray-toggle + probe:game 2026-10-21 搬到 ./probe.cjs */
 
 /*
  * ★ 只给探针用：**假装**进了/退了游戏，把 `game:changed` 广播一次。
@@ -901,10 +853,6 @@ devOnly(() => ipcMain.handle('probe:tray-toggle', () => {
  *   "收到广播之后她是不是真的坐下了、并且钉住不走"。
  *   ⚠️ 判定逻辑本身（全屏 + 进程）由 `selfcheck-gamedetect` 的 25 项钉着，不靠这个。
  */
-devOnly(() => ipcMain.handle('probe:game', (_e, on) => {
-  overlay.broadcast('game:changed', { on: !!on, why: '探针' });
-  return { sent: !!on };
-}));
 ipcMain.on('win:open-settings', () => win?.webContents.send('tray:open-settings'));
 ipcMain.handle('win:screen', () => {
   const d = screen.getPrimaryDisplay();
@@ -1360,6 +1308,17 @@ const trayApi = {
   openChat()     { overlay.open('chat'); },
   quit()         { app.isQuitting = true; app.quit(); },
 };
+
+/*
+ * ★ 2026-10-21：所有「只给探针用」的 IPC 都搬到 ./probe.cjs 了。
+ *   ⚠️ 必须在这里注册 —— 上面 `win` / `trayApi` / 调试台那几个函数都得在这个作用域里，
+ *      而且 `win` 是会重建的，所以传的是 getter 不是值。
+ */
+probes.register({
+  ipcMain, devOnly, overlay, review, probeBoundsLog, trayApi,
+  getWin: () => win,
+  design: { readDesign, writeDesign, designClear, designSave, DESIGN_FILE },
+});
 
 /* ============================================================
    探针模式（只在 YACHIYO_MS 设了的时候跑）
