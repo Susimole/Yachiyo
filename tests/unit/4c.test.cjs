@@ -77,6 +77,13 @@ put(path.join(DATA, 'habits.md'), '- 他会熬夜\n', T09);
 put(path.join(DATA, 'memes.md'), '- 章鱼\n', T09);
 put(path.join(DATA, 'profile.md'), '# 他\n- 上晚班\n', T10);
 put(path.join(DATA, 'pending.md'), '- 待确认的一条\n', T09);
+/* ★ 2026-10-21 加（外部审查 YCH-011）：这几份原来**一份都没进周备份** */
+put(path.join(DATA, '她的心事.json'), '{"情绪":{"现在":"高兴"},"心事":[]}\n', T10);
+put(path.join(DATA, '她认的错.json'), '{"items":[]}\n', T10);
+put(path.join(DATA, '她的小日子.json'), '{"items":[]}\n', T10);
+put(path.join(DATA, '她的目标.json'), '{"items":[]}\n', T10);
+put(path.join(DATA, 'usage.json'), '{"todayCalls":3}\n', T10);
+put(path.join(DATA, 'config.json'), '{"apiKey":"sk-SHOULD-NOT-BE-IN-ZIP"}\n', T10);
 put(path.join(cfg.DIR, 'persona', '人格配置.md'), '你是辉夜\n', T10);
 put(path.join(cfg.DIR, 'state-placeholder.txt'), 'x\n');
 put(path.join(store.STATE, 'review.json'), '{"lastDay":"2026-10-13"}\n', T10);
@@ -219,6 +226,22 @@ put(path.join(cfg.DIR, 'logs', '2026-09.log'),
     ['habits.md', 'memes.md', 'profile.md'].every((f) => unzipped.some((x) => x.endsWith(f))),
     '');
   chk('  状态带上了', unzipped.some((f) => /state[\\/]review\.json$/.test(f)), '');
+  /*
+   * ★ 2026-10-21 加（外部审查 YCH-011）：她自己的那几份 json 必须进包 ——
+   *   漏了的话，真拿这份 zip 恢复，**情绪和心事是空的**。
+   */
+  chk('★★ 她的心事 / 认错 / 小日子 / 目标都进了包',
+    ['她的心事.json', '她认的错.json', '她的小日子.json', '她的目标.json']
+      .every((f) => unzipped.some((x) => x.endsWith(f))),
+    unzipped.filter((f) => /她/.test(f)).join(' / ') || '（一份都没有）');
+  chk('  用量账本也带上了（图的数据源）',
+    unzipped.some((f) => /data[\\/]usage\.json$/.test(f)), '');
+  chk('★ API Key **不进**备份包（zip 会被他拷出去）',
+    !unzipped.some((f) => /config\.json|providers\.json/.test(f)) &&
+    !unzipped.some((f) => {
+      try { return /sk-SHOULD-NOT-BE-IN-ZIP/.test(fs.readFileSync(path.join(exDir, f), 'utf8')); }
+      catch { return false; }
+    }), '');
   chk('  归档带上了（那是人格的退路）',
     unzipped.some((f) => /archive[\\/]profile-20260927\.md$/.test(f)), '');
 
@@ -284,6 +307,59 @@ put(path.join(cfg.DIR, 'logs', '2026-09.log'),
   const rr = backup.tick(new Date(2026, 10, 2, 12, 0, 0));     // 同一天再来
   chk('★ 同一天再启动一次 → 它**接着重试**，并且这次成功',
     rr.memory && rr.memory.ok === true, rr.memory ? `${rr.memory.files} 个文件` : '（没重试）');
+
+  /*
+   * ══════════════════════════════════════════════════════════════
+   *  ★ 2026-10-21 加：写失败**不许假成功**（外部审查 YCH-006 / YCH-012）
+   *
+   *    这两条的共性：`store.writeText` / `store.writeFile` 失败时**只返回 false**，
+   *    不抛异常。原来调用方把返回值丢掉、只 `log.error` 一句 —— 于是
+   *      · 周备份：zip 没写进去也 `return ok:true` → `tick` 给这周盖章 → 一周不重试
+   *      · 每日备份：聊天/日志没写进去，`tick` 的 try/catch 什么也抓不到 → 照样盖章
+   *    也就是"备份看着备了"。这条链一假，等于**没有备份**。
+   *
+   *    ⚠️ 判据必须是"返回值/抛异常"这一层，不能只看日志有没有 error 行。
+   * ══════════════════════════════════════════════════════════════
+   */
+  console.log('\n【写失败不许假成功】');
+
+  const realWriteFile = store.writeFile;
+  const realWriteText = store.writeText;
+
+  /* ① 周备份：zip 写不进去 */
+  store.writeFile = () => false;
+  let memFail = null;
+  try { memFail = backup.backupMemory(new Date(2026, 10, 9, 10, 0, 0)); }
+  catch (e) { memFail = { ok: false, why: '抛异常：' + e.message }; }
+  store.writeFile = realWriteFile;
+  chk('★ 周备份 zip 写失败 → 返回 ok:false（不再假装成功）',
+    memFail && memFail.ok === false, memFail && String(memFail.why).slice(0, 50));
+
+  /* ② 每日备份：聊天记录写不进去 → 要抛，让 tick 判断成失败 */
+  store.writeText = () => false;
+  let threw = false;
+  try { backup.backupChats(new Date(2026, 10, 9, 10, 0, 0)); } catch { threw = true; }
+  store.writeText = realWriteText;
+  chk('★ 聊天记录写失败 → backupChats 抛出去（tick 才判得出"今天没备成"）', threw === true);
+
+  /* ③ 日志备份同理 */
+  store.writeText = () => false;
+  let threw2 = false;
+  try { backup.backupLogs(new Date(2026, 10, 9, 10, 0, 0)); } catch { threw2 = true; }
+  store.writeText = realWriteText;
+  chk('★ 日志备份写失败 → backupLogs 也抛', threw2 === true);
+
+  /* ④ 真跑一次 tick：写失败的日子**不许盖章** */
+  backup._reset();
+  store.writeText = () => false;
+  const rBad = backup.tick(new Date(2026, 10, 10, 10, 0, 0));   // 周二
+  store.writeText = realWriteText;
+  chk('★ 写失败那天的 tick 报告 ran=true 但没盖章',
+    rBad.ran === true && backup.lastState().lastDay !== '2026-11-10',
+    'lastDay=' + JSON.stringify(backup.lastState().lastDay || '') + ' · why=' + String(rBad.why).slice(0, 30));
+  const rRetry = backup.tick(new Date(2026, 10, 10, 14, 0, 0));  // 同一天修好了再来
+  chk('★ 同一天再来一次 → 它真的重试了（不是"今天已经备过了"）',
+    rRetry.ran === true, String(rRetry.why).slice(0, 40));
 
   console.log('\n【隔离检查】');
   const REAL = 'C:\\Users\\Susim\\AppData\\Roaming\\Yachiyo';

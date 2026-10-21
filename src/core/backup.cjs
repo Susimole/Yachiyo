@@ -131,6 +131,14 @@ function copyOne(src, dst) {
  */
 function backupChats(now = new Date()) {
   let n = 0;
+  /*
+   * ★ 2026-10-21 加（外部审查 YCH-012）：
+   *   `store.writeText` 失败时**只返回 false、不抛** —— 原来那句 `log.error`
+   *   写完之后函数照样 `return n`，`tick()` 那边的 try/catch 抓不到任何东西，
+   *   于是**照样给今天盖章**（"今天备过了"），当天不再重试。假成功。
+   *   ⇒ 现在数着失败数，收尾统一抛出去，让 tick 按真实结果决定盖不盖章。
+   */
+  let failed = 0;
 
   /*
    * ★★ **主聊天记录是 `data\chat.jsonl`，不在 `聊天记录\` 里面** ——
@@ -161,12 +169,12 @@ function backupChats(now = new Date()) {
     try {
       if (fs.readFileSync(dst, 'utf8') !== body) {
         if (store.writeText(dst, body)) n++;
-        else log.error('备份', '抄主聊天记录：写盘失败（详情见 store 的日志）');
+        else { log.error('备份', '抄主聊天记录：写盘失败（详情见 store 的日志）'); failed++; }
       }
     } catch {
       // 目标还不存在（第一次备）→ 直接写
       if (store.writeText(dst, body)) n++;
-      else log.error('备份', '抄主聊天记录：写盘失败（详情见 store 的日志）');
+      else { log.error('备份', '抄主聊天记录：写盘失败（详情见 store 的日志）'); failed++; }
     }
   }
 
@@ -184,7 +192,9 @@ function backupChats(now = new Date()) {
       if (d.size === fs.statSync(full).size) continue;
     } catch { /* 没有这份，往下走 */ }
     if (copyOne(full, dst)) n++;
+    else failed++;
   }
+  if (failed) throw new Error(`${failed} 处写盘失败（成功 ${n} 处）`);
   return n;
 }
 
@@ -209,6 +219,7 @@ function backupLogs(now = new Date()) {
   catch { return 0; }
 
   let n = 0;
+  let failed = 0;      // ★ 同 backupChats：写盘失败要抛出去，不能只写日志（YCH-012）
   for (const name of names) {
     let text = '';
     try { text = fs.readFileSync(path.join(LOG_DIR, name), 'utf8'); } catch { continue; }
@@ -234,9 +245,10 @@ function backupLogs(now = new Date()) {
       try { if (fs.readFileSync(dst, 'utf8') === body) continue; } catch { /* 没有，写 */ }
       // ⚠️ 无 BOM + 裸 LF；`store.writeText` 顺带把目录建好、而且是原子写（2026-10-16）
       if (store.writeText(dst, body)) n++;
-      else log.error('备份', `写日志备份 ${day} 时写盘失败`);
+      else { log.error('备份', `写日志备份 ${day} 时写盘失败`); failed++; }
     }
   }
+  if (failed) throw new Error(`${failed} 个日文件写盘失败（成功 ${n} 个）`);
   return n;
 }
 
@@ -314,7 +326,9 @@ function zipDir(zipPath, entries) {
 
   // ⚠️ 原子写（2026-10-16 修的）—— zip 写一半崩掉的话，
   //    那个文件看着是个完整的包，其实打不开，而且悄无声息
-  store.writeFile(zipPath, Buffer.concat([...parts, cenBuf, end]));
+  // ★ 2026-10-21（YCH-006）：**把写盘结果返回出去**，别丢。
+  //   调用方要拿它决定"这算不算备成了"。
+  return store.writeFile(zipPath, Buffer.concat([...parts, cenBuf, end]));
 }
 
 /** Node 22 的 `zlib.crc32` 不一定有 —— 没有就自己算（照 IEEE 802.3） */
@@ -362,7 +376,23 @@ function backupMemory(now = new Date()) {
   add(store.STATE, 'data/state');
   add(store.ARCHIVE, 'data/archive');
   add(path.join(store.DATA, '聊天记录'), 'data/聊天记录');
-  for (const f of ['habits.md', 'memes.md', 'profile.md', 'pending.md', 'chat.jsonl']) {
+  /*
+   * ★★ 2026-10-21 修（外部审查 YCH-011）：**她的那几份 json 原来全漏了**。
+   *
+   *    原来只列了 5 个 md + chat.jsonl，而 `data/` 根目录下还有：
+   *      她的心事.json（★ 情绪 + 心事**同一个文件**，见 heritems.cjs / mood.cjs）
+   *      她认的错.json · 她的小日子.json · 她的目标.json（goals.cjs）
+   *      usage.json（用量账本，图的数据源）
+   *    ⇒ 真要用这份 zip 恢复，"她的情绪和心事"是空的 —— 而这几样正是
+   *      "丢了就得从头攒"的那一类。审计说"无法完整恢复状态"，是对的。
+   *
+   *    ⚠️ `config.json` / `data/providers.json` **故意不放进来**：它们装 API Key，
+   *       而这份 zip 会被他随手拷出去。恢复时重填一遍比泄漏便宜。
+   */
+  for (const f of [
+    'habits.md', 'memes.md', 'profile.md', 'pending.md', 'chat.jsonl',
+    '她的心事.json', '她认的错.json', '她的小日子.json', '她的目标.json', 'usage.json',
+  ]) {
     add(path.join(store.DATA, f), `data/${f}`);
   }
 
@@ -372,7 +402,16 @@ function backupMemory(now = new Date()) {
   const zipPath = path.join(dir, `${T.day(now)}_${T.pad2(now.getHours())}${T.pad2(now.getMinutes())}.zip`);
   try {
     fs.mkdirSync(dir, { recursive: true });
-    zipDir(zipPath, entries);
+    /*
+     * ★ 2026-10-21（YCH-006）：`zipDir` 里那句 `store.writeFile(...)` 的**返回值
+     *   原来被丢掉了** —— 写盘失败照样往下走、照样 `return ok:true`，
+     *   接着 `tick()` 把这周标记成"备过了"，**一周都不会重试**。
+     *   现在把它透上来：没写成功就当失败，不盖章。
+     */
+    if (!zipDir(zipPath, entries)) {
+      log.error('备份', '周备份打包：zip 没写进盘（store.writeFile 返回 false）');
+      return { ok: false, dir, files: 0, bytes: 0, why: 'zip 写盘失败（磁盘满 / 目录不可写？）' };
+    }
   } catch (err) {
     log.error('备份', '打包记忆失败：' + err.message);
     return { ok: false, dir, files: 0, bytes: 0, why: err.message };
