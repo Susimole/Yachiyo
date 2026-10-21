@@ -219,9 +219,23 @@ function remove(id) {
   if (BUILTIN_IDS.includes(id)) return { ok: false, error: '内置预设不能删，改掉里面的内容就行' };
   if (!d.items[id]) return { ok: false, error: '没有这个预设' };
   delete d.items[id];
-  if (d.active === id) d.active = BUILTIN_IDS[0];
+  const wasActive = d.active === id;
+  if (wasActive) d.active = BUILTIN_IDS[0] || '';
   save(d);
-  return { ok: true, active: d.active };
+  /*
+   * ★★ 2026-10-21 修（外部审查 YCH-001）：
+   *    删掉的**正是当前在用的那套** ⇒ 必须把新 active 写回 config。
+   *
+   *    原来只改 `d.active` 就 return 了 —— config 里还留着**被删那套**的
+   *    base / key / model。于是页面显示「已经切到 DeepSeek 了」（UI 拿的是
+   *    providers.json 那份），而 `provider.cjs` 照旧读 config ⇒
+   *    **请求还打向刚被删掉的那个地址**，而且不报错。这就是"假成功"。
+   *
+   *    ⚠️ 只在自己被删时才写回 —— 删别的预设不该动 config。
+   *    ⚠️ `applyToConfig` 走 `cfgMod.patch`，全工程读 config 的模块自动跟上。
+   */
+  if (wasActive && d.items[d.active]) applyToConfig(d.items[d.active]);
+  return { ok: true, active: d.active, switched: wasActive };
 }
 
 /** 把这套值写进 config —— ★ 全工程都读 config，所以这就是「切换生效」的全部动作 */

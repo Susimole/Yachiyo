@@ -132,8 +132,7 @@ chk('文件写坏了：不抛异常', threw === null, threw && threw.message);
 chk('文件写坏了：内置 4 个照样回得来', list && list.items.filter((x) => x.builtin).length === 4,
   list && list.items.map((x) => x.id).join(','));
 
-/* ---------- ⑦ 保险：config 空了要能补回来（2026-10-17 实测撞出来的坑）---------- */
-console.log('');
+/* ---------- ⑦ 保险：config 空了要能补回来（2026-10-17 实测撞出来的坑）---------- */console.log('');
 console.log('── ⑦ config 被清空时的补救 ──');
 providers.activate('deepseek');
 cfg.patch({ apiBase: 'https://api.deepseek.com/v1', apiKey: OLD.apiKey, model: OLD.model });
@@ -163,7 +162,41 @@ chk('★ apiBase 和 model 也补回来了',
   cfg.get('apiBase') + ' / ' + cfg.get('model'));
 chk('补过一次之后再调就没事干了（不会反复写盘）', providers.ensureConfig() === false);
 
-/* ---------- ⑧ 清干净 ---------- */
+/* ---------- ⑧ 删掉「正在用」的那个预设：config 必须跟着切走 ---------- */
+/*
+ * ★ 2026-10-21 加，对应外部审查 YCH-001（确定复现）。
+ *
+ *   改前：`remove()` 只把 `d.active` 改成 deepseek，**没把新 active 写回 config**。
+ *   ⇒ 页面显示"已切到 DeepSeek"，而 config 里还是被删那套的 base/key/model，
+ *     请求照样打向已经删掉的地址，而且不报错。
+ */
+console.log('');
+console.log('── ⑧ 删掉正在用的预设 ──');
+const c2 = providers.addCustom('要删的那个');
+providers.saveOne(c2.id, { base: 'http://127.0.0.1:9998/v1', key: 'sk-DELETED-should-not-survive', model: 'gone-model' });
+providers.activate(c2.id);
+chk('切过去之后 config 里是它那套',
+  cfg.get('apiBase') === 'http://127.0.0.1:9998/v1' && cfg.get('model') === 'gone-model',
+  cfg.get('apiBase') + ' / ' + cfg.get('model'));
+
+const rm = providers.remove(c2.id);
+chk('删成功，并且报告「动到了当前在用的那套」', rm.ok === true && rm.switched === true, JSON.stringify(rm));
+chk('★ config 的地址切回了新 active（deepseek）',
+  cfg.get('apiBase') === 'https://api.deepseek.com/v1', String(cfg.get('apiBase')));
+chk('★ config 的模型也跟着切了（没留着被删那个）',
+  cfg.get('model') !== 'gone-model', String(cfg.get('model')));
+chk('★ 被删那套的 Key 没留在 config 里',
+  cfg.get('apiKey') !== 'sk-DELETED-should-not-survive', String(cfg.get('apiKey')));
+
+/* 删**不是**当前在用的那个，不该动 config */
+const c3 = providers.addCustom('闲着的那个');
+providers.activate('deepseek');
+const keepBase = cfg.get('apiBase');
+const rm2 = providers.remove(c3.id);
+chk('删一个没在用的预设：报告 switched=false', rm2.ok === true && rm2.switched === false, JSON.stringify(rm2));
+chk('删一个没在用的预设：config 一个字节都不动', cfg.get('apiBase') === keepBase, cfg.get('apiBase'));
+
+/* ---------- ⑨ 清干净 ---------- */
 fs.rmSync(HOME, { recursive: true, force: true });
 
 console.log('');

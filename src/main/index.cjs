@@ -1197,7 +1197,20 @@ ipcMain.handle('providers:list',     () => providers.list());
 ipcMain.handle('providers:current',  () => providers.current());
 ipcMain.handle('providers:save',     (_e, id, patch) => providers.saveOne(String(id || ''), patch || {}));
 ipcMain.handle('providers:add',      (_e, name) => providers.addCustom(name));
-ipcMain.handle('providers:remove',   (_e, id) => providers.remove(String(id || '')));
+ipcMain.handle('providers:remove',   (_e, id) => {
+  const r = providers.remove(String(id || ''));
+  /*
+   * ★ 2026-10-21 修（外部审查 YCH-001）：删掉**当前在用**那个预设时，config 变了
+   *   ⇒ 必须像 activate 那样把变化推回页面。不推的话聊天窗手里那份 CFG 还是旧的
+   *   —— "页面自己改的能生效、别人改的页面不知道"那条老坑（见 broadcastCfg 的注释）。
+   *   ⚠️ 用 broadcastCfg 而不是手写：它会把 apiKey 走 maskForPage 打码。
+   */
+  if (r.ok && r.switched) {
+    broadcastCfg(['apiBase', 'apiKey', 'model']);
+    overlay.broadcast('providers:changed', providers.list());
+  }
+  return r;
+});
 ipcMain.handle('providers:activate', (_e, id) => {
   const r = providers.activate(String(id || ''));
   if (r.ok) {
