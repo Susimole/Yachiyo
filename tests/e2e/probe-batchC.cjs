@@ -165,7 +165,17 @@ const goto = (c, name) => ev(c, `(() => {
   chk('「花费走势」那一行挂上了（滚下去看得到）', chartRow === true);
 
   const counts = {};
-  for (const [label, want] of [['日', 24], ['周', 7], ['月', 30]]) {
+  /*
+   * ⚠️⚠️ 2026-10-21 改判据：**他 2026-10-21 亲自把图表改成"窗口 + 滑块"了** ——
+   *    原话「日和月做个可拖动小滑块，显示范围只显示最近 6 小时 / 7 天」。
+   *    所以现在：日 = 6 格（窗口）、周 = 7 格（本来就 7 天，全显、无滑块）、
+   *    月 = 7 格（窗口，不是 30 天全铺）。
+   *
+   *    原来这里写的是 日 24 / 月 30 —— 那是**改之前**的形状。
+   *    产品是对的，判据过期了（AGENTS.md 里那条坑，又一次）。
+   *    顺手把「有没有滑块」也钉上：窗口比总数少的时候必须有，否则他拉不动。
+   */
+  for (const [label, want, wantSlider] of [['日', 6, true], ['周', 7, false], ['月', 7, true]]) {
     await ev(pc, `(() => {
       const row = document.querySelector('#pMain .row[data-rk="usageChart"]');
       const b = [...row.querySelectorAll('button')].find((x) => (x.textContent || '').trim() === ${JSON.stringify(label)});
@@ -177,8 +187,13 @@ const goto = (c, name) => ev(c, `(() => {
       const row = document.querySelector('#pMain .row[data-rk="usageChart"]');
       return row ? row.querySelectorAll('svg rect').length : -1;
     })()`);
+    const slider = await ev(pc, `(() => {
+      const row = document.querySelector('#pMain .row[data-rk="usageChart"]');
+      return row ? !!row.querySelector('.uchart-range') : false;
+    })()`);
     counts[label] = n;
-    chk(`★ 粒度「${label}」→ ${want} 根柱子`, n === want, String(n));
+    chk(`★ 粒度「${label}」→ ${want} 根柱子（窗口）`, n === want, String(n));
+    chk(`  粒度「${label}」${wantSlider ? '有' : '没有'}拖动滑块`, slider === wantSlider, String(slider));
   }
   console.log('   三种粒度：' + J(counts));
   await ev(pc, `(() => { const e = document.querySelector('#pMain .row[data-rk="usageChart"]'); if (e) e.scrollIntoView({ block: 'center' }); return 1; })()`);

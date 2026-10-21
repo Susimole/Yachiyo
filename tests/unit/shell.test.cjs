@@ -18,14 +18,28 @@ const { spawn, execSync } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
 
-const ROOT = path.join(__dirname, '..');
+const os = require('node:os');
+
+/*
+ * ⚠️⚠️ 2026-10-21 修：原来是 `path.join(__dirname, '..')` —— 这个文件在
+ *    `tests/unit/` 下，`..` 只到 `tests/`，于是**把 tests 目录当成 Electron 的
+ *    应用目录**去 spawn ⇒ electron 找不到入口、秒退 ⇒ 探针报「窗口起不来」。
+ *    跟之前那 5 个 e2e 探针同一种"少一层"的 bug（它们是 `..` 缺一级，
+ *    这套因为默认跳过，谁都没看见）。
+ *    ⇒ 少写一层 `..` 的代价是整晚以为产品坏了。
+ */
+const ROOT = path.join(__dirname, '..', '..');
 const electronPath = require('electron');
 
 const CDP_PORT = 9333;
 const FAKE_PORT = 8788;
 const FAKE_URL = `http://127.0.0.1:${FAKE_PORT}`;
 const RUN_MS = Number(process.env.SELFCHECK_MS || 42000);
-const OUT = path.join('D:\\AI工作目录\\_探针结果', `外壳自检-${stamp()}`);
+/*
+ * ★ 2026-10-21 顺带修：产出原来写死在 `D:\AI工作目录\_探针结果`（**旧工程、已冻结**）。
+ *   现在跟别的自检一个路子，落在系统临时目录里 —— 不往仓库和旧目录里丢垃圾。
+ */
+const OUT = path.join(os.tmpdir(), 'yachiyo-shell', `外壳自检-${stamp()}`);
 const SHOT_W = 1000;            // 截图裁成这么宽 —— 全窗 2560px 的图看着太费劲
 
 function stamp() {

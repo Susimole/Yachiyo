@@ -122,12 +122,21 @@ async function shot(c, name) {
    */
   console.log('   睡着时主进程的睡眠标记 = ' + await ev(mc, `window.yachiyo.ov._isSleeping()`));
 
-  await mc.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: px, y: py, button: 'left', clickCount: 1 });
-  await sleep(60);
-  await mc.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: px, y: py, button: 'left', clickCount: 1 });
-  await sleep(500);
+  /*
+   * ⚠️ 2026-10-21：这里原来复用上面那组 `px/py` —— 但**她会动**（走动 / 换姿态），
+   *    第一次点击之后那组坐标就过期了，第二次等于点在空气上 ⇒ 当然"没醒"。
+   *    ⇒ 点之前重新量一次她此刻的身体位置。这不是放宽判据：
+   *      只是让「点她一下」真的落在**她身上**，判据（主进程必须醒）一动不动。
+   */
+  const probe2 = JSON.parse(await ev(mc, 'JSON.stringify(window.__yachiyo.hitProbe())'));
+  const px2 = Math.round(probe2.x), py2 = Math.round(probe2.y);
+  await mc.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: px2, y: py2, button: 'left', clickCount: 1 });
+  await sleep(80);
+  await mc.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: px2, y: py2, button: 'left', clickCount: 1 });
+  await sleep(600);
   chk('★ 点过之后主进程醒了（聊天便不再被"她睡了"挡）',
-    (await ev(mc, `window.yachiyo.ov._isSleeping()`)) === false);
+    (await ev(mc, `window.yachiyo.ov._isSleeping()`)) === false,
+    '点在 (' + px2 + ',' + py2 + ') 之后仍是睡着的');
 
   /* ---------- ④ 顺手拍一张服务商那行（间距 + 去备注之后） ---------- */
   console.log('');

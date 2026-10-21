@@ -150,23 +150,44 @@ const PROD_KEYS = [
 
   console.log('\n【主进程侧：探针 IPC 口也得套闸】');
   const fs = require('node:fs');
-  const src = fs.readFileSync(path.join(ROOT, 'src', 'main', 'index.cjs'), 'utf8');
-  const bare = src.split('\n').filter((ln) => /^ipcMain\.handle\('(probe:|ov:probe)/.test(ln));
-  chk('★ 没有「无条件注册」的探针 handler', bare.length === 0,
-    bare.length ? '★ 露头的：' + bare.map((s) => s.trim()).join(' | ') : '');
-  // ⚠️ 先去掉注释行 —— 文档里那句 `用法：devOnly(() => ...)` 会被正则一起数进来
-  const code = src.split('\n')
-    .filter((ln) => { const t = ln.trim(); return !t.startsWith('*') && !t.startsWith('//'); })
-    .join('\n');
-  const gated = (code.match(/devOnly\(\(\) => ipcMain\.handle\('(probe:|ov:probe)/g) || []).length;
   /*
-   * ⚠️ 这里原来写死 `=== 3`（当初正好三个探针口）。2026-10-17 我又加了
-   *    `probe:tray-toggle` 和 `probe:game` 两个 ⇒ 变成 5 ⇒ 断言误报红。
-   *    **产品是对的（5 个全套了 devOnly）**，错的是"把数字写死"这个判据本身 ——
-   *    探针口只会越来越多，写死的数字每加一个就得改一次断言，等于给未来埋雷。
-   *    ⇒ 改成「至少 3 个，且上面那条『没有裸注册』也得过」，不再锁死个数。
+   * ★★ 2026-10-21 改：探针口已经不是全在 `index.cjs` 里了。
+   *
+   *    第 46 轮洗澡把 7 个探针 IPC 搬进了 `src/main/probe.cjs`，
+   *    而这条判据还在只翻 `index.cjs` ⇒ 数到 0 个 ⇒ 报红说「0 个套了 devOnly」。
+   *    **产品是对的，判据过期了**（AGENTS.md 里那条坑，第二次栽在同一条上）。
+   *    ⇒ 改成扫这两个文件，并且不再靠"数 inline 的 devOnly"——
+   *      probe.cjs 里有一组 handler 是写在 `devOnly(() => { ... })` 大括号里的，
+   *      只数同一行会漏掉它们。
    */
-  chk('所有探针 handler 都套了 devOnly（不写死个数）', gated >= 3, `套了 ${gated} 个`);
+  const FILES = ['src/main/index.cjs', 'src/main/probe.cjs'];
+  let total = 0;
+  const ungated = [];
+  for (const rel of FILES) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    let inBlock = 0;      // 正在一个 `devOnly(() => {` 里面？
+    src.split('\n').forEach((ln, i) => {
+      const t = ln.trim();
+      // 注释行不参与（文档里写着 `用法：devOnly(() => ...)`）
+      const isComment = t.startsWith('*') || t.startsWith('//') || t.startsWith('/*');
+      if (isComment) return;
+      if (/^devOnly\(\(\)\s*=>\s*\{\s*$/.test(t)) { inBlock++; return; }
+      if (inBlock && t === '});') { inBlock--; return; }
+      const m = ln.match(/ipcMain\.handle\('(probe:|ov:probe|design:)/);
+      if (!m) return;
+      total++;
+      const inlineGated = /devOnly\(/.test(ln);
+      if (!inlineGated && !inBlock) ungated.push(`${rel}:${i + 1} ${t.slice(0, 40)}`);
+    });
+  }
+  chk('★ 没有「无条件注册」的探针 handler', ungated.length === 0,
+    ungated.length ? '★ 露头的：' + ungated.join(' | ') : `${total} 个全在 devOnly 里`);
+  /*
+   * ⚠️ 个数**别写死**（原来写死过 3，后来加到 5 就误报）。
+   *    这里只守住一个下界：探针口至少有这几个（少了说明被谁误删了），
+   *    真正的判据是上面那条「一个都不能裸着」。
+   */
+  chk('所有探针 handler 都套了 devOnly（不写死个数）', total >= 5 && ungated.length === 0, `共 ${total} 个`);
 
   console.log('\n' + '─'.repeat(52));
   const pass = out.filter((x) => x.ok).length;
