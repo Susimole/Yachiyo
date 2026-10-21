@@ -106,9 +106,9 @@ function dayKey(d = new Date()) {
 }
 
 /** 往一个桶里加一笔 */
-function bump(bucket, key, tok, yuan) {
+function bump(bucket, key, tok, yuan, calls = 1) {
   const b = bucket[key] || (bucket[key] = { calls: 0, tokens: 0, cost: 0 });
-  b.calls += 1;
+  b.calls += Math.max(1, Math.round(Number(calls) || 1));
   b.tokens += tok;
   b.cost += yuan;
 }
@@ -176,23 +176,30 @@ function save() {
  * 记一笔。
  * @param {object} usage  provider 返回的原始 usage
  * @param {number} yuan   这一笔花了多少钱（provider.cost 算好的）
+ * @param {number} [calls] 这一笔记**几次调用**（默认 1）
+ *
+ * ★ 2026-10-21 加 `calls`（外部审查 YCH-003）：
+ *   一轮对话里**可能打两次模型**（她调了 look_screen：第一次带工具、第二次带结果）。
+ *   原来 `add()` 不管里面几次都只 `+1`，于是调用次数和成本一起少记。
+ *   现在由调用方把两次的 usage 合并、次数一起传进来 —— 一次落盘、一次 bump。
  */
-function add(usage, yuan) {
+function add(usage, yuan, calls = 1) {
   load();
   roll();
+  const n = Math.max(1, Math.round(Number(calls) || 1));
   const tok = (usage?.prompt_tokens || 0) + (usage?.completion_tokens || 0);
-  data.todayCalls++;
+  data.todayCalls += n;
   data.todayTokens += tok;
   data.todayCost += yuan;
-  data.monthCalls++;
+  data.monthCalls += n;
   data.monthTokens += tok;
   data.monthCost += yuan;
-  data.totalCalls++;
+  data.totalCalls += n;
   data.totalCost += yuan;
   data.lastAt = Date.now();
   // ★ 同时进历史桶（图就是靠这两个画的）
-  bump(data.hourly, hourKey(), tok, yuan);
-  bump(data.daily, data.day || today(), tok, yuan);
+  bump(data.hourly, hourKey(), tok, yuan, n);
+  bump(data.daily, data.day || today(), tok, yuan, n);
   save();
   return { ...data };
 }

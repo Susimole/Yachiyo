@@ -90,6 +90,14 @@ async function reply(text, o = {}) {
   ];
 
   let out;
+  /*
+   * ★ 2026-10-21 加（外部审查 YCH-003）：**这一轮一共打了几次模型**。
+   *   平时 1 次；她调了 look_screen 就是 2 次（第一次带工具、第二次带结果）。
+   *   记账必须按两次合并 —— 原来第二次把 `out` 整个覆盖，第一次的 usage
+   *   连钱带 token 一起丢了（账本只记到 24 而实际是 36）。
+   */
+  let calls = 1;
+  let uFirst = null;      // 第一次（带工具那次）的 usage
   try {
     out = await provider.chat({
       base: c.apiBase,
@@ -116,6 +124,7 @@ async function reply(text, o = {}) {
     memory.popLast('user');
     throw err;
   }
+  uFirst = out.usage || null;
 
   /*
    * ★★ 模型要「看屏幕」（2026-10-17 加的，方案乙）。
@@ -191,9 +200,11 @@ async function reply(text, o = {}) {
           onDelta: o.onDelta,
           signal: o.signal,
         });
+        calls = 2;              // ★ 真要来了第二次的账 ⇒ 两次一起记
       } catch (err) {
         // 第二次失败：至少把她看到了什么说出来，别让他白等
-        out = { text: lookDesc, usage: out.usage, toolCalls: [] };
+        // ⚠️ 这一支只成功了一次 ⇒ `calls` 保持 1，别把失败那次算成钱
+        out = { text: lookDesc, usage: uFirst, toolCalls: [] };
       }
     }
   }
@@ -238,12 +249,47 @@ async function reply(text, o = {}) {
   // 这一轮梗库命中的热度，攒到现在一起落盘
   habits.flushHits();
 
-  const yuan = provider.cost(out.usage, {
-    in: c.priceIn, out: c.priceOut, hit: c.priceCacheHit,
-  });
-  usage.add(out.usage, yuan);
+  /*
+   * ★★ 记账（2026-10-21 修 · 外部审查 YCH-003）
+   *
+   *   一轮里可能打了**两次**模型（她调了 look_screen）。原来只按**第二次**的
+   *   `out.usage` 记账 —— 第一次的 prompt（那一整段系统提示 + 历史）连钱带 token
+   *   全丢了。审查复现：两次各 24 token ⇒ 账本只记 24，实际 36。
+   *
+   *   现在：token 合并、开关数按 `calls` 记、钱按**每次各自的 usage**分别算再相加。
+   *   ⚠️ 分别算而不是合并后算：`cost()` 里 cache 命中/未命中是两条差价，合并虽然
+   *      也是线性的，但分开算跟"实际下了两次单"一一对应，对账时不用再推。
+   *   ⚠️ 第二次失败时 `calls` 仍是 1、`out.usage` 就是第一次那份 —— 不多记。
+   */
+  const price = { in: c.priceIn, out: c.priceOut, hit: c.priceCacheHit };
+  const uSum = calls > 1 ? sumUsage(uFirst, out.usage) : (out.usage || null);
+  const yuan = calls > 1
+    ? provider.cost(uFirst, price) + provider.cost(out.usage, price)
+    : provider.cost(out.usage, price);
+  usage.add(uSum, yuan, calls);
 
-  return { ...out, cost: yuan };
+  return { ...out, usage: uSum, cost: yuan, calls };
+}
+
+/**
+ * 把两次请求的 usage 加起来。
+ *
+ * ⚠️ 只加**有意义的 token 字段**，别把两次的对象整个 `{...a, ...b}` 合并 ——
+ *    那样 b 为 null 的字段会把 a 的值盖掉。
+ * ⚠️ `prompt_cache_miss_tokens` 两边都没有时这里是 0，`provider.cost` 里
+ *    `0 || (prompt_tokens - hit)` 会自动退回按差值算，不会算成"全命中"。
+ */
+function sumUsage(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  const s = (x, y) => (Number(x) || 0) + (Number(y) || 0);
+  return {
+    prompt_tokens: s(a.prompt_tokens, b.prompt_tokens),
+    completion_tokens: s(a.completion_tokens, b.completion_tokens),
+    total_tokens: s(a.total_tokens, b.total_tokens),
+    prompt_cache_hit_tokens: s(a.prompt_cache_hit_tokens, b.prompt_cache_hit_tokens),
+    prompt_cache_miss_tokens: s(a.prompt_cache_miss_tokens, b.prompt_cache_miss_tokens),
+  };
 }
 
 module.exports = {
