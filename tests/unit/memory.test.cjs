@@ -7,7 +7,7 @@
  * ⚠️ 全程跑在**隔离目录**里（`YACHIYO_HOME`），他的真配置 / 真记忆
  *    一个字节都不会被碰。脚本最后会自己查一遍这件事。
  *
- * 跑法：node scripts/selfcheck-memory.cjs
+ * 跑法：npm test（或 node tests/unit/memory.test.cjs）
  */
 
 'use strict';
@@ -448,7 +448,9 @@ console.log(`  ${pass}/${pass + fail} 通过${fail ? `  ✗ ${fail} 项没过` :
 console.log('─'.repeat(52) + '\n');
 
 const report = { when: T.stamp(), home: HOME, pass, fail, results };
-fs.writeFileSync(path.join(__dirname, '..', '_selfcheck-memory.json'),
+/* ⚠️ 报告写进隔离家目录，**别写仓库根** —— 以前写到上级目录，
+   仓库根就常年挂着一个 _selfcheck-memory.json，清残留清一次又生一次（2026-10-21 改） */
+fs.writeFileSync(path.join(HOME, '_selfcheck-memory.json'),
   JSON.stringify(report, null, 2), 'utf8');
 
 process.exit(fail ? 1 : 0);

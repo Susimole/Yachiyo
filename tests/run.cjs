@@ -82,6 +82,19 @@ for (const f of picked) {
 
 fs.rmSync(HOMES, { recursive: true, force: true });
 
+/* ★ 2026-10-21 加：全绿就顺手把散在仓库根 / tests 下的隔离家目录扫掉。
+ *   来由：15 套自检各自把 `YACHIYO_HOME` 写死成 `ROOT/_selfcheck-home-<名>`
+ *   （不看 run.cjs 塞的 env），跑完就留在仓库里 —— 清一次又生一次。
+ *   ⚠️ 有红**不扫**：红的时候那个目录就是现场，删了等于毁证据。 */
+if (!fails.length) {
+  for (const dir of [ROOT, __dirname]) {
+    for (const n of fs.readdirSync(dir)) {
+      if (!/^_selfcheck-(home|.*\.json$)/.test(n)) continue;
+      fs.rmSync(path.join(dir, n), { recursive: true, force: true });
+    }
+  }
+}
+
 const secs = ((Date.now() - t0) / 1000).toFixed(1);
 console.log('');
 console.log((fails.length ? '✗ 有红' : '★ 全绿') + '　' + pass + '/' + picked.length + ' 套，用时 ' + secs + ' 秒');
