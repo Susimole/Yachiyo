@@ -957,9 +957,23 @@ function saveOnExit() {
  * @param {{delta:string, done:string, fail:string}} ev 三个事件名
  * @returns {Promise<(t:string)=>void>}
  */
-async function preflight(msg, ev) {
+async function preflight(msg, ev, signal = null) {
   // 边收边推 —— 不然要干等到整段生成完才出字
   const onDelta = (t) => overlay.broadcast(ev.delta, t);
+
+  /*
+   * ★★ 2026-10-21 修（外部审查 YCH-010）：
+   *
+   *    原来这段 preflight 完全**不受「停止」控制** —— `chat:abort` 只 abort
+   *    `provider.chat`，而这里查天气（5 秒）/ 联网（最长 20 秒）照等不误。
+   *    他点了停止，界面还挂在那儿，看着像按钮坏了；而且这段时间她还会
+   *    真花掉一次联网请求。
+   *
+   *    ⇒ ① 把 runChat 那个 `ctl.signal` 传进来（`signal`）；
+   *      ② 每走一步之前先看一眼 aborted，已经停了就一步都别再发起；
+   *      ③ 把 signal 传进 weather / websearch 里每个 fetch（那两边各自接住了）。
+   */
+  const stopped = () => !!(signal && signal.aborted);
 
   /*
    * ★ 他这句话在问天气 → **现查一次**（旧工程 Invoke-AiWeatherRefreshNow 那套）。
@@ -969,7 +983,7 @@ async function preflight(msg, ev) {
    *    这里只在**他自己问到天气**时才等这一下，而且给 5 秒硬上限 ——
    *    查不动就不查了，用缓存那份，不能因为天气把他这句话卡死。
    */
-  if (weather.isAsking(msg)) {
+  if (!stopped() && weather.isAsking(msg)) {
     try {
       /*
        * ⚠️⚠️ **不要传 `force: true`**（2026-10-16 修的）。
@@ -984,7 +998,7 @@ async function preflight(msg, ev) {
        *    5 秒硬上限照样留着（查不动就不等了）。
        */
       const r = await Promise.race([
-        weather.fetchWeather(),
+        weather.fetchWeather({ signal }),
         new Promise((res) => setTimeout(() => res({ ok: false, why: '查得太慢，先不等了' }), 5000)),
       ]);
       plog('[weather] 他问到天气 → 查：' + (r.ok ? (r.cached ? '用缓存' : '拿到新的') : ('没查到 · ' + r.why)));
@@ -1005,7 +1019,7 @@ async function preflight(msg, ev) {
    * ⚠️ 只在**主对话**这条链查（快速问答也查，它俩共用 runChat）；
    *    自言语 / 回顾那些链不查 —— 那些是她在自言自语，不是他问的。
    */
-  if (websearch.shouldSearch(msg)) {
+  if (!stopped() && websearch.shouldSearch(msg)) {
     /*
      * ⚠️ **先冒一句**。
      *    查一次要 4~9 秒（实测 8146ms，服务端搜了 4 次），
@@ -1014,7 +1028,7 @@ async function preflight(msg, ev) {
      *    但 `brain.reply` 一开始会重置缓冲，所以这句不会残留）。
      */
     overlay.broadcast(ev.delta, '我查一下…');
-    const w = await websearch.search(msg).catch((e) => ({ ok: false, why: e.message }));
+    const w = await websearch.search(msg, { signal }).catch((e) => ({ ok: false, why: e.message }));
     plog(`[联网] ${w.ok ? `查到 ${w.answer.length} 字（服务端搜了 ${w.uses} 次）` : '没查到：' + w.why}`);
   }
 
@@ -1079,11 +1093,15 @@ async function runChat(text, ev) {
    *    现在那两件事在 `preflight()` 里、调用点在 try 里面，怎么炸都会放锁。
    */
   try {
-    const onDelta = await preflight(msg, ev);
+    /*
+     * ★ 2026-10-21（YCH-010）：把 `ctl.signal` 一起传进去 —— preflight 里
+     *   查天气 / 联网要真能被打断（原来只在这儿补判一次，等于等它自己跑完）。
+     */
+    const onDelta = await preflight(msg, ev, ctl.signal);
 
     /*
-     * ⚠️ 查天气 / 查联网最长能花 9 秒，这期间「停止」是够不着 fetch 的。
-     *    在这儿补一次判 —— 不然他点了停止还得干等，看着像按钮坏了。
+     * ⚠️ 补判一次：preflight 里那几步都 `.catch` 吞掉异常了，所以「已取消」
+     *    不会自己抛到这儿；必须在这儿看一眼，否则她照样会接着往下发模型请求。
      */
     if (ctl.signal.aborted) throw Object.assign(new Error('取消了'), { hard: true });
 

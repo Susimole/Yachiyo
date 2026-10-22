@@ -231,9 +231,11 @@ function pickText(json) {
  * ⚠️ **非流式**。Anthropic 那条链要等它搜完再答，流式反而更难处理超时。
  *    旧工程实测 3.6 秒返回，20 秒有 5 倍余量。
  *
+ * @param {string} query
+ * @param {{signal?:AbortSignal}} [opt] `opt.signal` = 外面那个「点停止」的开关（2026-10-21 加）
  * @returns {Promise<{ok:boolean, answer:string, uses:number, ms:number, why:string}>}
  */
-async function search(query) {
+async function search(query, opt = {}) {
   const c = cfg.all();
   const bad = (why) => ({ ok: false, answer: '', uses: 0, ms: 0, why });
 
@@ -262,6 +264,25 @@ async function search(query) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(new Error('TIMEOUT')), timeoutSec * 1000);
   const t0 = Date.now();
+
+  /*
+   * ★ 2026-10-21 加（外部审查 YCH-010）：**把「点停止」接进来**。
+   *
+   *   原来这里只有一个自己的超时（最长 20 秒），外面那个 `chat:abort`
+   *   根本够不着 —— 他点了停止，她还在这儿等联网结果，最长干等 9~20 秒，
+   *   看着就像按钮坏了。
+   *
+   *   ⇒ 接受一个外部 signal：它一 abort，这里立刻 abort 自己的 ctl
+   *     （fetch 当场 reject，走下面那条 catch 报「取消了」）。
+   *   ⚠️ 两个只能"谁先到谁算"：外部取消不该被报成"等超时了"。
+   */
+  let cancelled = false;
+  const outer = opt && opt.signal;
+  const onOuterAbort = () => { cancelled = true; try { ctl.abort(new Error('CANCELLED')); } catch { /* 已 abort */ } };
+  if (outer) {
+    if (outer.aborted) { clearTimeout(timer); return bad('取消了'); }
+    outer.addEventListener('abort', onOuterAbort, { once: true });
+  }
 
   try {
     const res = await fetch(u, {
@@ -334,6 +355,10 @@ async function search(query) {
 
   } catch (err) {
     const ms = Date.now() - t0;
+    if (cancelled) {
+      log.info('联网', `他点了停止 —— 联网这次中断（${ms}ms）`);
+      return { ok: false, answer: '', uses: 0, ms, why: '取消了' };
+    }
     if (err.name === 'AbortError' || ctl.signal.aborted) {
       log.warn('联网', `${timeoutSec} 秒还没回来，断了`);
       return { ok: false, answer: '', uses: 0, ms, why: `等超时了（${timeoutSec} 秒）` };
@@ -342,6 +367,7 @@ async function search(query) {
     return { ok: false, answer: '', uses: 0, ms, why: err.message };
   } finally {
     clearTimeout(timer);
+    if (outer) outer.removeEventListener('abort', onOuterAbort);
   }
 }
 

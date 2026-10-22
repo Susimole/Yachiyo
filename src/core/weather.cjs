@@ -57,9 +57,20 @@ let inflight = null;
  * ⚠️ **必须自己解 UTF-8** —— 中国天气网这两个接口的响应头**没有 charset**，
  *    交给浏览器/库去猜会按 Latin-1 解，中文全变乱码（旧工程踩过同一个坑）。
  */
-async function getText(url, timeoutMs, { referer = REFERER } = {}) {
+async function getText(url, timeoutMs, { referer = REFERER, signal = null } = {}) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(new Error('TIMEOUT')), timeoutMs);
+  /*
+   * ★ 2026-10-21 加（外部审查 YCH-010）：外面那个「点停止」要够得着这儿。
+   *   ⚠️ 用 `cancelled` 区分「他点停止」和「自己超时」—— 两种都 abort，
+   *      但报出来该是两句不同的话（"取消了" vs "等 N 秒没回话"）。
+   */
+  let cancelled = false;
+  const onOuter = () => { cancelled = true; try { ctl.abort(new Error('CANCELLED')); } catch { /* 已 abort */ } };
+  if (signal) {
+    if (signal.aborted) { clearTimeout(timer); throw new Error('取消了'); }
+    signal.addEventListener('abort', onOuter, { once: true });
+  }
   try {
     const res = await fetch(url, {
       method: 'GET',
@@ -76,10 +87,12 @@ async function getText(url, timeoutMs, { referer = REFERER } = {}) {
     const buf = await res.arrayBuffer();
     return new TextDecoder('utf-8').decode(buf);
   } catch (err) {
+    if (cancelled) throw new Error('取消了');
     if (ctl.signal.aborted) throw new Error(`等 ${timeoutMs / 1000} 秒没回话`);
     throw err;
   } finally {
     clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onOuter);
   }
 }
 
@@ -100,14 +113,14 @@ function field(raw, name) {
  *    以前失败的空表也存进去，一次网络超时就让这个进程**活多久报多久**
  *    「位置没认出来」。不缓存 → 下一轮还会重试。
  */
-async function readTable(code) {
+async function readTable(code, signal = null) {
   const key = String(code);
   if (tableCache.has(key)) return tableCache.get(key);
 
   const out = [];
   try {
     const raw = await getText(`http://www.weather.com.cn/data/list3/city${key}.xml`, T_CITY,
-      { referer: 'http://www.weather.com.cn/' });
+      { referer: 'http://www.weather.com.cn/', signal });
     for (const part of String(raw).split(',')) {
       const m = /^\s*(\d+)\|(.+?)\s*$/.exec(part);
       if (m) out.push({ code: m[1], name: m[2] });
@@ -219,14 +232,14 @@ function toId(_leaf) {
  */
 const idByLeaf = new Map();
 
-async function leafId(leaf) {
+async function leafId(leaf, signal = null) {
   const key = String(leaf);
   if (idByLeaf.has(key)) return idByLeaf.get(key);
 
   let id = '';
   try {
     const raw = await getText(`http://www.weather.com.cn/data/list3/city${key}.xml`, T_CITY,
-      { referer: 'http://www.weather.com.cn/' });
+      { referer: 'http://www.weather.com.cn/', signal });
     /*
      * `010101|101010100` 这种才是叶子 —— 右边是 **9 位天气 ID**。
      *
@@ -254,7 +267,7 @@ async function leafId(leaf) {
  * 而且要**分清「网络没拉到」和「名字写错了」** —— 旧工程 2026-10-03 专门修过：
  * 以前一律说「没认出省份（要写省名）」，其实是网络超时，把人往错处引。
  */
-async function resolveCity(text) {
+async function resolveCity(text, signal = null) {
   const t = String(text || '').replace(/[\s　]/g, '');
   if (!t) return { ok: false, why: '没填城市' };
 
@@ -264,8 +277,14 @@ async function resolveCity(text) {
   const cached = idCache.get(t);
   if (cached) return { ok: true, ...cached };
 
-  const provs = await readTable('');
+  const provs = await readTable('', signal);
   if (!provs.length) {
+    /*
+     * ★ 2026-10-21（YCH-010）：被「停止」打断时，`readTable` 自己的 catch 会把
+     *   那个 abort 异常吞掉、回一张空表 —— 别把它报成"网络问题"，
+     *   不然他点了停止看到的是「城市表没拉到」，还以为自己网络坏了。
+     */
+    if (signal && signal.aborted) return { ok: false, why: '取消了' };
     return { ok: false, why: '城市表没拉到（网络问题，不是省名写错 —— 稍后会自动重试）' };
   }
 
@@ -274,7 +293,7 @@ async function resolveCity(text) {
   const prov = pickIn(provs, t);
   if (!prov) return { ok: false, why: `没认出来「${text}」—— 要写省名，例如「湖南省郴州市」` };
 
-  const cities = await readTable(prov.code);
+  const cities = await readTable(prov.code, signal);
   const city = pickIn(cities, t);
   if (!city) return { ok: false, why: `「${prov.name}」下面没找到这个市` };
 
@@ -284,7 +303,7 @@ async function resolveCity(text) {
    *    它的下级才是 `010101|北京,010102|海淀,010103|朝阳,…`。
    *    留着那条分支只会把「北京」直接当叶子算，得到的 ID 是错的。
    */
-  const dists = await readTable(city.code);
+  const dists = await readTable(city.code, signal);
   const dist = pickIn(dists, t);
   const leaf = dist ? dist.code : city.code;
   const name = dist ? dist.name : city.name;
@@ -296,7 +315,7 @@ async function resolveCity(text) {
    *    宁可**如实说没查到**，也不能拿个错 ID 去请求：错 ID 有时会**照样返回数据**
    *    （比如拿 `101010100` 问「朝阳」会回北京），那是假成功，比报错危险得多。
    */
-  const id = await leafId(leaf);
+  const id = await leafId(leaf, signal);
   if (!id) {
     return { ok: false, why: '认出了城市，但拿不到它的天气编号（城市表没拉到，网络问题）—— 稍后会自动重试' };
   }
@@ -345,18 +364,28 @@ const toF = (c) => {
  * 真去网上拉一份。**不做缓存判断、不做退避** —— 那些是 fetchWeather 的事。
  * @returns {{ok:boolean, data?:object, why?:string}}
  */
-async function fetchNow(cityText, unit) {
-  const r = await resolveCity(cityText);
+async function fetchNow(cityText, unit, signal = null) {
+  const r = await resolveCity(cityText, signal);
   if (!r.ok) return { ok: false, why: r.why };
 
   const urlSk = `http://d1.weather.com.cn/sk_2d/${r.id}.html`;
   const urlDz = `http://d1.weather.com.cn/dingzhi/${r.id}.html`;
 
   // 两个接口各拉各的 —— 次日那个挂了不该把实时也带下来
+  // ★ 2026-10-21：把外部那个「点停止」的 signal 传下去（YCH-010）
+  // ⚠️ 这儿是 fetchNow，形参就叫 `signal`（别写成 `o.signal` —— fetchNow 没有 `o`）
   const [skRaw, dzRaw] = await Promise.all([
-    getText(urlSk, T_SK).catch(() => ''),
-    getText(urlDz, T_DZ).catch(() => ''),
+    getText(urlSk, T_SK, { signal }).catch(() => ''),
+    getText(urlDz, T_DZ, { signal }).catch(() => ''),
   ]);
+
+  /*
+   * ⚠️ 上面两个 `.catch(() => '')` 会把「取消了」也吞掉 —— 所以这里再补一刀：
+   *    如果外面已经点了停止，就别把这次当成"接口回空了"往下报。
+   */
+  if (signal && signal.aborted) {
+    return { ok: false, text: '', data: null, why: '取消了', cached: false };
+  }
 
   const sk = parseSk(skRaw);
   if (!sk.temp && !sk.weather) {
@@ -460,8 +489,16 @@ async function fetchWeather(o = {}) {
 
   inflight = (async () => {
     try {
-      const r = await fetchNow(cityText, unit);
+      const r = await fetchNow(cityText, unit, o.signal || null);
       if (!r.ok) {
+        /*
+         * ★ 2026-10-21（YCH-010）：被他点停止打断的那次，**不算失败** ——
+         *   不退避、不记 lastWhy（记了的话接下来 5 分钟她都说"刚才没查到"，
+         *   而真实原因是"他让我停"）。
+         */
+        if (o.signal && o.signal.aborted) {
+          return { ok: false, text: '', data: null, why: '取消了', cached: false };
+        }
         // ⚠️ 失败退避 5 分钟 —— 旧工程第三轮专门改的：
         //    以前失败也按天退避，一次网络抖动就让那一整天都没有天气
         nextTryAt = Date.now() + 5 * 60000;
