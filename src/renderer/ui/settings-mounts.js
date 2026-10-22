@@ -16,6 +16,7 @@
  */
 import { svg } from './icons.js';
 import { fontState } from './font.js';
+import { makeSaveQueue } from './savequeue.js';
 import { api, esc, curInfo, selRow, showPage, DEV } from './settings.js';
 
 let usagePaint = null;
@@ -89,7 +90,17 @@ function fillApiRows(item) {
  *
  *   ⚠️ 只注册一次（模块级）：`showPage` 每次重画都会调一次挂载函数，
  *      监听要是在那儿挂，切十次页就有十个监听一起跑。
+ *
+ * ★★ 2026-10-21（外部审查 YCH-009）：不再"每敲一个字就写盘一次"。
+ *    改前是 `providers.save(...)` 直接 fire-and-forget —— 打一个 32 位 Key 就是
+ *    32 次 IPC + 32 次写盘，而且**旧请求晚回来会盖掉新值**。
+ *    现在交给 `savequeue.js`：停手 300ms 才发一次；同一个预设永远只有一条在飞。
  */
+const provQ = makeSaveQueue({
+  gap: 300,
+  send: (id, patch) => window.yachiyo.providers.save(id, patch),
+});
+
 function armProviderSync() {
   if (provSyncArmed) return;
   provSyncArmed = true;
@@ -102,7 +113,7 @@ function armProviderSync() {
     else if (lab.startsWith('API Key')) patch = { key: inp.value };
     else if (lab.startsWith('模型')) patch = { model: inp.value };
     if (!patch) return;
-    window.yachiyo.providers.save(provState.active, patch).catch(() => {});
+    provQ.push(provState.active, patch);
   });
 }
 
@@ -144,6 +155,12 @@ async function mountProviderPick(cell) {
     cell.querySelectorAll('[data-pid]').forEach((b) => {
       b.onclick = async () => {
         if (b.dataset.pid === list.active) return;
+        /*
+         * ★ 2026-10-21（YCH-009）：切走之前**先把攒着的那一下发完** ——
+         *   不然"敲完最后一个字立刻去点另一个服务商"，那 300ms 内还没发出去的
+         *   最后一次改动就丢了（改前用 input 就是为了防这个）。
+         */
+        await provQ.flushAll();
         const r = await window.yachiyo.providers.activate(b.dataset.pid);
         if (!r.ok) return;
         follow(r.item);
@@ -168,6 +185,7 @@ async function mountProviderPick(cell) {
           if (e.key !== 'Enter') return;
           const name = inp.value.trim();
           if (!name) { paint(); return; }
+          await provQ.flushAll();          // ★ 先发完在飞的那一下（YCH-009）
           const r = await window.yachiyo.providers.add(name);
           if (!r.ok) { paint(); return; }
           await window.yachiyo.providers.activate(r.id);
@@ -181,6 +199,7 @@ async function mountProviderPick(cell) {
     const delBtn = cell.querySelector('[data-pdel]');
     if (delBtn) {
       delBtn.onclick = async () => {
+        await provQ.flushAll();            // ★ 删之前先把攒着的那一下发完（YCH-009）
         const r = await window.yachiyo.providers.remove(list.active);
         if (!r.ok) return;
         list = await window.yachiyo.providers.list();
