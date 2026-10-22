@@ -198,8 +198,46 @@ function start(onGame, getCfg) {
     return false;
   }
 
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => {
+  /*
+   * ★★ 2026-10-21 修（外部审查 YCH-005 · 确定复现）：
+   *
+   *    上面那个 try/catch **抓不到异步失败**。`spawn` 只会在"参数就错了"时同步抛；
+   *    像 `powershell.exe` 不存在（被安全软件拦掉 / 路径没了）、权限不够这类，
+   *    是以 **`'error'` 事件**来的。没人接 ⇒ Node 抛未捕获异常 ⇒ **主进程直接崩**。
+   *    更糟的是紧接着那两行 `child.stdout.setEncoding(...)`：起失败时 `stdout` 是 null，
+   *    又是一记 TypeError。两个雷挨着。
+   *
+   *    ⇒ ① 先接住 `'error'`；② stdout/stderr 判空，没流就当这次没起成；
+   *      ③ 出事之后把 `child` 清掉（下一拍能重起），但**不在 error 里 kill**
+   *         （进程可能压根没建出来，kill 一个半死的孩子只会再来一次 error）。
+   *    ⚠️ 后面一律用局部 `proc`，不再一路上读会被清成 null 的模块变量 `child`。
+   */
+  const proc = child;
+  let spawnErr = null;
+
+  proc.on('error', (err) => {
+    spawnErr = err;
+    console.error('[game] 探测进程出错：' + err.message);
+    if (child === proc) child = null;
+    /*
+     * ⚠️ 得安排重试 —— spawn 失败时 `'exit'` 可能**根本不触发**，
+     *    光靠下面那个 exit 钩子会一辈子不重起。延迟跟 exit 那条保持一致（10 秒），
+     *    免得它稳定失败时变成重启风暴。
+     */
+    if (handler) {
+      setTimeout(() => { if (handler && !child) { try { start(handler, getCfg); } catch { /* 下次再说 */ } } }, 10000);
+    }
+  });
+
+  if (!proc.stdout || !proc.stderr) {
+    console.error('[game] 探测进程没有输出流，这次放弃' +
+      (spawnErr ? '：' + spawnErr.message : '（spawn 没给 stdio）'));
+    if (child === proc) child = null;
+    return false;
+  }
+
+  proc.stdout.setEncoding('utf8');
+  proc.stdout.on('data', (chunk) => {
     buf += chunk;
     const lines = buf.split(/\r?\n/);
     buf = lines.pop() || '';
@@ -217,21 +255,23 @@ function start(onGame, getCfg) {
     }
   });
 
-  child.stderr.on('data', (d) => {
+  proc.stderr.on('data', (d) => {
     // ⚠️ PowerShell 的怪毛病：脚本能跑但会吐几行"不是 cmdlet"的噪声，别当成故障
     const s = String(d).trim();
     if (s) failing++;
     if (failing === 1) console.error('[game] PowerShell 说：' + s.slice(0, 200));
   });
 
-  child.on('exit', (code) => {
-    child = null;
+  proc.on('exit', (code) => {
+    // ⚠️ 只清"这个孩子自己"—— 若期间已经重起过一个新的，别把它的引用也清掉
+    if (child === proc) child = null;
+    if (code) failing++;
     /*
      * ⚠️ 退出就重起一次（PowerShell 被杀、休眠唤醒后失联都可能）。
      *    但要**留个闸**：每 10 秒最多重起一次，不然它要是稳定崩，就成了无限重启风暴。
      */
     if (handler) {
-      setTimeout(() => { if (!child) { try { start(handler, getCfg); } catch { /* 下次再说 */ } } }, 10000);
+      setTimeout(() => { if (handler && !child) { try { start(handler, getCfg); } catch { /* 下次再说 */ } } }, 10000);
     }
   });
 
