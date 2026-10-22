@@ -30,6 +30,47 @@ let loaded = false;
 const MAX_TURNS = 30;
 const MAX_CHARS = 12000;
 
+/**
+ * 内存窗口里**主动消息**（识屏 / 自言语 / 睡前…）单独留多少条。
+ *
+ * ★★ 2026-10-22（外部审查 YCH-008，实测复现）：
+ *
+ *    改前只有一个窗口 —— `MAX_TURNS * 2 = 60` 条，**主动消息也算在里面**。
+ *    实测：聊 5 轮真话之后，再塞 60 条主动消息 ⇒ `recent(skipProactive)` 返回 **0 条**，
+ *    他再说一句，模型只看得到**他这一句**（前面 5 轮全被挤出内存窗口了）。
+ *    文件里一条没丢（chat.jsonl 71 条都在），丢的是内存窗口。
+ *
+ *    ⚠️ 注意：真凶**不是** `recent()` 的过滤顺序（它就是在捡的循环里过滤的）。
+ *       光改过滤救不了 —— 过滤得再干净，窗口里没剩下真话也是空的。
+ *
+ *    现在分两桶：真话 `MAX_TURNS * 2` 条、主动消息 `MAX_PROACTIVE` 条，各截各的。
+ */
+const MAX_PROACTIVE = 90;
+
+/**
+ * 她「主动说的」= 对话流里带 `kind` 且不是一问一答的那些。
+ * （`记忆` 里 kind 只有写入方知道，这里只做分类）
+ */
+function isProactive(m) {
+  return !!m && !!m.kind && m.kind !== '对话' && m.kind !== '快速问答';
+}
+
+/**
+ * 按两类各自的额度裁剪内存窗口，**保持原来的先后顺序**。
+ * ⚠️ 用对象引用做集合来挑（每条记录都是独立对象，没有重复引用）；
+ *    拼接会打乱顺序 —— 顺序错了她读起来就是"倒着聊天"。
+ */
+function trimWindow(arr) {
+  const talk = [];
+  const pro = [];
+  for (const m of arr) (isProactive(m) ? pro : talk).push(m);
+  const keepTalk = talk.slice(-MAX_TURNS * 2);
+  const keepPro = pro.slice(-MAX_PROACTIVE);
+  if (keepTalk.length === talk.length && keepPro.length === pro.length) return arr;
+  const keep = new Set([...keepTalk, ...keepPro]);
+  return arr.filter((m) => keep.has(m));
+}
+
 /* ═══════════════ 短期 ═══════════════ */
 
 function load() {
@@ -49,7 +90,11 @@ function load() {
         if (o && o.role && typeof o.content === 'string') out.push(o);
       } catch { /* 单行坏了跳过，不让一行毁掉整份历史 */ }
     }
-    history = out.slice(-MAX_TURNS * 2);
+    /*
+     * ★ 2026-10-22：装载也走**两桶**（原来 `slice(-60)` 一刀切 ——
+     *   重启一次，前面攒的主动消息就能把真话整个顶掉）。
+     */
+    history = trimWindow(out);
   } catch (err) {
     console.error('[memory] 对话历史读不了，当空的用：' + err.message);
     history = [];
@@ -68,8 +113,14 @@ function push(role, content, extra = {}) {
    *    跑久了内存里只剩 30 条，重启之后又是 60 条，
    *    于是学习 / 回顾 / 今日计数**长跑和重启后看到的历史不一样**。
    *    （`recent(30)` 两边都是 30 所以看不出来，只有 `recent(200)` 那种调用方会发现。）
+   *
+   * ★ 2026-10-22：改成**两桶各留各的**（真话 60 / 主动 90）——
+   *   主动消息再多也挤不掉他真说的话（YCH-008）。
+   *   ⚠️ **每次 push 都裁**：一开始写成"超过 60+90=150 才裁"，结果跑久了窗口是
+   *     100 条、重启之后变 60 条 —— 「长跑和重启看到的不一样」那个老毛病又回来了
+   *     （p2 那套自检当场逮到）。窗口上限就 150 条，每 push 扫一遍的开销可以忽略。
    */
-  if (history.length > MAX_TURNS * 2) history = history.slice(-MAX_TURNS * 2);
+  history = trimWindow(history);
 
   try {
     store.ensure();
@@ -107,11 +158,7 @@ function recent(maxTurns = MAX_TURNS, opt = {}) {
   const picked = [];
   let chars = 0;
   const skipProactive = opt && opt.skipProactive === true;
-  /*
-   * 「她主动说的话」在对话流里带 `kind`；没有 kind 的（或 '对话'/'快速问答'）
-   * 才是真正的一问一答。
-   */
-  const isProactive = (m) => !!m.kind && m.kind !== '对话' && m.kind !== '快速问答';
+  /* ⚠️ `isProactive` 已提到模块顶层（窗口裁剪也要用同一套判定 —— 两处口径必须一致） */
 
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
@@ -144,14 +191,54 @@ function recent(maxTurns = MAX_TURNS, opt = {}) {
 }
 
 /**
+ * ★★ 2026-10-22 新增（外部审查 YCH-007）：**给聊天窗看的那份历史**。
+ *
+ *   原来聊天窗走的是 `memory.recent(60)` —— 那是**喂模型**的 DTO，只有
+ *   `{role, content}` 两个字段。于是聊天窗：
+ *     · **分不出**哪句是聊天、哪句是识屏 / 自言语（`kind` 被丢了）；
+ *     · 看不到时间（`ts` 被丢了），也点不开"她当时看到了什么"（`look` 也被丢了）；
+ *     · 只能看到内存窗口那 60 条（`recent(60)` 的上限），翻不到更早的。
+ *
+ *   这里改成**从 chat.jsonl 尾部读**（文件里是全量，一条不少），
+ *   返回完整记录：`{ role, content, ts, kind?, look? }`。
+ *
+ *   ⚠️ 刻意**不复用** `recent()`：一个给模型（字段越少越好）、一个给界面（字段越全越好）。
+ *     两件事混用，就是这次这个 bug。
+ *   ⚠️ 文件读不了就退回内存窗口 —— 聊天空白比"报错"更糟。
+ *
+ * @param {number} [max=200] 最多拿多少条（从最新往回数）
+ */
+function historyForDisplay(max = 200) {
+  const n = Math.max(1, Number(max) || 200);
+  try {
+    if (fs.existsSync(FILE)) {
+      const lines = fs.readFileSync(FILE, 'utf8').replace(/^﻿/, '').split('\n');
+      const out = [];
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try {
+          const o = JSON.parse(ln);
+          if (o && o.role && typeof o.content === 'string') out.push(o);
+        } catch { /* 坏行跳过，别让一行毁掉整个聊天记录 */ }
+      }
+      if (out.length) return out.slice(-n);
+    }
+  } catch (err) {
+    console.error('[memory] 展示历史读不了，退回内存窗口：' + err.message);
+  }
+  load();
+  return history.slice(-n).map((m) => ({ ...m }));
+}
+
+/**
  * 某个时刻**之后**的消息 —— **带 ts** 的原始记录。
  *
  * ⚠️ 为什么另开一个：`recent()` 返回的 `{role, content}` 是**直接喂给模型的
  *    messages**，不敢多塞字段（有些服务端对未知字段很挑）。可回顾那条链
  *    需要"只看今天"，那就得有 `ts`。所以这条给的是**本地用的记录**。
  *
- * ⚠️ 它只看**内存窗口**（`load()` 装进来的那 60 条）—— 他要是今天一口气聊了
- *    100 句，更早的那 40 句看不到。跟改之前同一个量级，不是新引入的。
+ * ⚠️ 它只看**内存窗口**（真话 60 + 主动 90，见 trimWindow）—— 他要是今天一口气聊了
+ *    100 句，更早的那 40 句看不到。要全量得走 `historyForDisplay()`。
  */
 function since(ms) {
   load();
@@ -413,8 +500,8 @@ function readLastExit() {
 }
 
 module.exports = {
-  FILE, FILE_SESSION, FILE_SPOKEN, MAX_TURNS,
-  load, push, popLast, recent, since, todayCount, lastSeen, count, clear,
+  FILE, FILE_SESSION, FILE_SPOKEN, MAX_TURNS, MAX_PROACTIVE,
+  load, push, popLast, recent, since, historyForDisplay, todayCount, lastSeen, count, clear,
   saveSession, readSession, buildSessionBlock,
   addSpoken, readSpoken, recentSpoken, buildSpokenBlock,
   timeSense, saveLastExit, readLastExit,

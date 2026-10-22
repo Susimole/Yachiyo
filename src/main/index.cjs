@@ -1192,7 +1192,17 @@ ipcMain.handle('chat:send-quick', async (_e, text) => {
  */
 ipcMain.on('chat:abort', () => { busy?.abort(); });
 
-ipcMain.handle('chat:history', () => memory.recent(60));
+/*
+ * ★ 2026-10-22（YCH-007）：**聊天窗要的是完整记录，不是喂模型那份**。
+ *
+ *   原来这行是 `memory.recent(60)` —— 那是给模型的 DTO，只有 `{role, content}`：
+ *   聊天窗于是分不出识屏 / 自言语（`kind` 丢了）、看不到时间（`ts` 丢了）、
+ *   也点不到"她当时看见了什么"（`look` 丢了），而且只能翻到内存窗口那 60 条。
+ *
+ *   ⇒ 换成 `historyForDisplay(200)`：从 chat.jsonl 尾部读全量记录。
+ *     ⚠️ 别换回 `recent()` —— 那是"给模型"的口径，两件事混用就是这个 bug。
+ */
+ipcMain.handle('chat:history', () => memory.historyForDisplay(200));
 // 同上：清空的通知也得广播 —— 收的是聊天窗，不是主窗口
 ipcMain.on('chat:clear', () => { memory.clear(); overlay.broadcast('chat:cleared'); });
 

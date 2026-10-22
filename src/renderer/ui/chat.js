@@ -150,12 +150,45 @@ function sys(text) {
   return d;
 }
 
-function note(text, kind = '') {
+function makeNote(text, kind = '') {
   const d = document.createElement('div');
   d.className = 'c-note' + (kind ? ' ' + kind : '');
   d.textContent = text;
+  return d;
+}
+
+function note(text, kind = '') {
+  const d = makeNote(text, kind);
   body().appendChild(d);
   body().scrollTop = body().scrollHeight;
+}
+
+/**
+ * ★ 2026-10-22（YCH-007）：聊天窗里的一条历史 —— **分两种长相**。
+ *
+ *   他 2026-10-20 拍过一条口径：「那些话（识屏/自言语）**要留在聊天窗里给我看**，
+ *   但**别喂进提示词**」。所以它们本来就该在这儿，只是**不该长得跟聊天一样** ——
+ *   一天几十条，混在一问一答里，他自己的话都被埋了。
+ *
+ *   ⇒ 带 kind 的（识屏 / 自言语 / 睡前…）画成淡一点的小字，前面带来源和时间；
+ *     一问一答照旧是气泡。
+ */
+const PROACTIVE_KINDS = new Set(['对话', '快速问答']);
+
+function hhmm(ts) {
+  const t = Number(ts);
+  if (!t) return '';
+  const d = new Date(t);
+  const p = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  return (sameDay ? '' : `${d.getMonth() + 1}/${d.getDate()} `) + `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function rowFor(m) {
+  const kind = m.kind && !PROACTIVE_KINDS.has(m.kind) ? String(m.kind) : '';
+  if (kind) return makeNote(`[${kind} ${hhmm(m.ts)}] ${m.content}`, 'pro');
+  return makeBubble(m.role === 'user' ? 'user' : 'ai', m.content).row;
 }
 
 /* ============================================================
@@ -204,7 +237,8 @@ async function loadHistory() {
     frag.appendChild(makeSys('还没说过话。先打个招呼？'));
   } else {
     frag.appendChild(makeSys('—— 下面是你们之前聊的 ——'));
-    for (const m of hist) frag.appendChild(makeBubble(m.role === 'user' ? 'user' : 'ai', m.content).row);
+    /* ★ 2026-10-22（YCH-007）：带 kind 的（识屏 / 自言语）画成小字，不跟气泡混着 */
+    for (const m of hist) frag.appendChild(rowFor(m));
   }
   body().prepend(frag);
   histLoaded = true;
