@@ -560,7 +560,12 @@ async function ping(o) {
    ============================================================ */
 
 /** 列清单不用等太久 —— 它就是个 GET，不像生成那样要思考 */
-const LIST_MS = 15000;
+/**
+ * 列清单不用等太久 —— 它就是个 GET，不像生成那样要思考。
+ * ⚠️ 2026-10-22：加了个 env 钩子（只在自检里用）—— 真要等 15 秒才验得出
+ *    "body 卡住"那种超时，测试跑不动。日常没人设它，就是 15000。
+ */
+const LIST_MS = Number(process.env.YACHIYO_LIST_MS || 15000);
 
 /**
  * 问接口地址「你有哪些模型」。
@@ -599,9 +604,32 @@ async function listModels(o) {
     }
     throw new Error(`连不上 ${o.base} —— 检查网络，或者接口地址写错了`);
   }
-  clearTimeout(timer);
 
-  const text = await res.text().catch(() => '');
+  /*
+   * ★★ 2026-10-21 修（外部审查 YCH-004 · 确定复现）：
+   *
+   *    原来这一行 `clearTimeout(timer)` 在**读 body 之前** —— 意思是
+   *    "头回来了就算通了"。可 `res.text()` 也要吃网络：服务端完全可能
+   *    头照发、body 迟迟不来（被限流 / 中间设备扣着 / 服务端自己卡住）。
+   *    那时候这个 timer 已经清掉了 ⇒ **没有任何超时** ⇒
+   *    `listModels()` 永远 pending，设置页那颗「检测模型」一直转圈，
+   *    上层 IPC 也跟着挂住（只能重启客户端）。
+   *
+   *    ⇒ 改法：① timer 留到 body 读完再清；② 另外再挂一个**只管 body** 的超时，
+   *      读超了照样 abort（reader 会被打断，`res.text()` 抛 AbortError）。
+   *      两个都留着不会互相干扰：先到先算。
+   */
+  let text = '';
+  try {
+    text = await res.text();
+  } catch (err) {
+    clearTimeout(timer);
+    if (ctl.signal.aborted) {
+      throw new Error(`${LIST_MS / 1000} 秒内没把响应读完 —— 地址通了但响应卡住了`);
+    }
+    throw new Error('响应读到一半断了 —— 网络不稳，或者服务端中途关掉了连接');
+  }
+  clearTimeout(timer);
 
   if (!res.ok) {
     /*
