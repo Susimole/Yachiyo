@@ -487,11 +487,44 @@ function refreshMouse(e) {
 let lastInteract = 0;
 
 /**
- * ★ 他是不是在全屏游戏里（2026-10-17 加的）。
+ * ★ 是不是在全屏游戏里（2026-10-17 加的）。
  * 由主进程的 `core/gamedetect.cjs` 判定（全屏 + 进程两条一起看），
- * 通过 `game:changed` 推过来；这里只当标志用，**钉住坐着**在主循环里每帧兜。
+ * 通过 `game:changed` 推过来。这里只是**意图标志** ——
+ * 真正怎么处理全交给下面那个唯一的入口 `reconcileGameMode()`。
  */
 let gameMode = false;
+
+/** 游戏时"这一坐永远不结束"用的剩余时间（状态机到点会自己换动作，得钉死） */
+const GAME_SIT_LEFT = 1e6;
+
+/**
+ * ★★ 2026-10-23（外部审查 YCH-013）：**「游戏时她该坐着」只在这里决定**。
+ *
+ *   改前有两处各写了一遍同一件事：事件来的时候设一次（`game:changed`）、
+ *   主循环每帧再兜一次。当时是对的（能兜住），但两处写同一件事，
+ *   以后谁只改一半就会打架 —— 比如给"坐下"加个冷却或音效，
+ *   事件那边改了、主循环每帧还把她拉回去 ⇒ 表现成"卡在某个动作"，
+ *   而这种问题最难查（页面不报错，只是行为怪）。
+ *
+ *   ⇒ 现在事件和主循环**都只调这一个函数**，判断只有一份。
+ *
+ *   ⚠️ `enter()` 每次都会重置剩余时间、清冷却、并触发换套过渡
+ *      （见 `rig/state.js`）—— 所以**只在真的要变时才调**，
+ *      不能每帧无条件调，否则她每帧重进一次 sit，过渡会抖。
+ *   ⚠️ `left` 用 `GAME_SIT_LEFT` 当标记值：等于它就说明"现在是被游戏钉住的"，
+ *      不对它动就说明是状态机自己排的时间 —— 别拿 `left > 1000` 这类近似判断。
+ */
+function reconcileGameMode() {
+  if (!rig || !rig.state) return;
+  if (gameMode) {
+    if (rig.state.mode !== 'sit') rig.state.enter('sit', '打游戏');
+    if (rig.state.left !== GAME_SIT_LEFT) rig.state.left = GAME_SIT_LEFT;
+    return;
+  }
+  /* 放开：下一拍冷却结束就自己换动作（不硬 `enter`，免得打断正在播的过渡） */
+  if (rig.state.left === GAME_SIT_LEFT) rig.state.left = 0;
+}
+
 
 /** 记一次「他碰她了」—— 按她 / 拖她 / 双击她 / 右键她都算（见各自的调用点） */
 function markInteract() { lastInteract = performance.now(); }
@@ -1193,19 +1226,17 @@ function loop(now) {
   maskTick++;
 
   /*
-   * ★ 打游戏时把她钉在「坐着」（2026-10-17 加的）。
+   * ★ 打游戏时把她钉在「坐着」（2026-10-17 加，2026-10-23 收成一个入口）。
    *
    *   为什么**每帧兜一次**而不是只在事件来的时候设一次：
    *   能改状态的地方太多了（点她 → rest()、冷却结束 → 重骰、被叫醒 → enter('sit')…），
    *   任何一处漏判她就会溜达起来 —— 而他正全屏打着游戏，根本不会去看她。
-   *   ⇒ 这里当成**不变量**来维持：只要 `gameMode` 是真，状态不是 sit 就拉回来。
-   *   ⚠️ `left = 1e6` 是让她"这一坐永远不结束"（状态机到点会自己换动作）。
-   *   ⚠️ 只钉状态，**不碰识屏和自言自语** —— 他明确要求那两条不变。
+   *   ⇒ 这里当成**不变量**维持：每帧问一次 `reconcileGameMode()`。
+   *
+   *   ⚠️ 具体怎么做**只写在那个函数里**，这里不许再出现 `enter(...)` / `left = ...`。
+   *      两处各写一遍就是这次要治的病（外部审查 YCH-013）。
    */
-  if (gameMode && rig && rig.state && rig.state.mode !== 'sit') {
-    rig.state.enter('sit', '他在打游戏');
-    rig.state.left = 1e6;
-  }
+  reconcileGameMode();
 
   // ★ 每约半秒重申一次「要不要收鼠标」—— 丢了能自愈，见 reassertMouse 的注释
   reassertMouse(now);
@@ -1351,21 +1382,14 @@ async function boot() {
   /*
    * ★ 打游戏了 / 打完了（2026-10-17 加的，判定在主进程的 core/gamedetect.cjs）。
    *
-   *   ⚠️ 这里**只记标志**，真正的"钉住坐着"在主循环里每帧兜（见那边的注释）——
-   *      因为能改状态的地方太多，事件来的时候设一次根本兜不住。
-   *   ⚠️ 挂到「打完了」就把 `left` 清零，让状态机下一拍自己重选动作：
-   *      不然她会一直坐着，得等到下次重启。
+   *   ⚠️ 这里**只更新意图标志**，然后立刻喊一声 `reconcileGameMode()` ——
+   *      具体怎么处理只有那一个函数说了算（2026-10-23 收的，外部审查 YCH-013）。
+   *      这里**不许**再出现 `enter(...)` / `left = ...`：
+   *      两处各写一遍，以后谁改一半就会打架。
    */
   window.yachiyo.on('game:changed', (st) => {
-    const on = !!(st && st.on);
-    gameMode = on;
-    if (!rig || !rig.state) return;
-    if (on) {
-      rig.state.enter('sit', '他在打游戏');
-      rig.state.left = 1e6;
-    } else {
-      rig.state.left = 0;          // 放开：下一拍冷却结束就换动作
-    }
+    gameMode = !!(st && st.on);
+    reconcileGameMode();
   });
 
   window.yachiyo.on('cfg:changed', ({ key, value }) => { CFG[key] = value; apply(key); });

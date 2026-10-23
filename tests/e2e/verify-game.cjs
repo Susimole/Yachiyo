@@ -97,6 +97,25 @@ const ts = async () => (await (await fetch('http://127.0.0.1:9222/json/list')).j
   console.log('   等 3 秒后 = ' + m3);
   chk('★ 3 秒后还是坐着（没被冷却重骰走）', m3 === 'sit', String(m3));
 
+  /*
+   * ★ 2026-10-23 加（外部审查 YCH-013）：
+   *   「游戏时坐着」这件事原来由**事件**和**主循环**各写一遍。收成一个入口之后，
+   *   要能证明它**没有在两种动作之间抖** —— 上面那几条都是"某一时刻拍一张"，
+   *   拍不到抖动。这里连采 20 次、跨约 1.5 秒，全 sit 才算过。
+   */
+  const seen = [];
+  for (let i = 0; i < 20; i++) {
+    seen.push(await ev(mc, 'window.__yachiyo.rig.state.mode'));
+    await sleep(75);
+  }
+  const allSit = seen.every((x) => x === 'sit');
+  const uniq = [...new Set(seen)];
+  console.log('   连采 20 次：' + uniq.join(' / ') + '（共 ' + seen.length + ' 个样本）');
+  chk('★ 连采 20 次跨 1.5 秒一直是 sit —— 没有在两个动作之间抖', allSit, uniq.join(','));
+  chk('  而且 left 始终是"钉死"的那个值（没被状态机改回去）',
+    Number(await ev(mc, 'window.__yachiyo.rig.state.left')) === 1e6,
+    String(await ev(mc, 'window.__yachiyo.rig.state.left')));
+
   /* ---------- ③ 退游戏 ---------- */
   console.log('');
   console.log('── ③ 假装退游戏 ──');
